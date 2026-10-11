@@ -17,7 +17,7 @@ import RedstoneConduits from './RedstoneConduits';
  * - Pulsing Redstone signal conduits
  */
 export default function VoxelCanvas({ telemetry = {} }) {
-  const { activeDestination, isProcessing } = telemetry;
+  const { activeDestination, isProcessing, vaultHit, signal } = telemetry;
 
   return (
     <div className="relative w-full h-full min-h-[500px] bg-[#0a0d14] overflow-hidden select-none">
@@ -46,13 +46,13 @@ export default function VoxelCanvas({ telemetry = {} }) {
         <WardenTower active={isProcessing} position={[0, 0, 0]} />
 
         {/* 3. File Cabinet Vault (Semantic Cache) */}
-        <MemoryVault hit={activeDestination === 'memory_vault'} position={[-5, 0, 0]} />
+        <MemoryVault hit={vaultHit} position={[-5, 0, 0]} />
 
         {/* 4. Model Fortress (Local SLM + Cloud Bastion) */}
         <ModelStations activeStation={activeDestination} />
 
         {/* 5. Glowing Redstone Conduit trails */}
-        <RedstoneConduits pulseActive={isProcessing} />
+        <RedstoneConduits pulseActive={isProcessing} signal={signal} />
 
         {/* Camera Controls */}
         <OrbitControls
