@@ -27,13 +27,13 @@ export default function ModelStations({ activeStation = null }) {
 
   return (
     <group>
-      {/* Blast Furnace – Local SLM Outpost */}
-      <group ref={slmRef} position={[5.5, 0, -2.5]}>
+      {/* Blast Furnace – Local SLM Outpost (spread far right-top) */}
+      <group ref={slmRef} position={[10, 0, -5]}>
         <primitive object={slmScene.clone()} />
       </group>
 
-      {/* Nether Portal – Cloud Fortress Citadel */}
-      <group ref={cloudRef} position={[5.5, 0, 3.0]}>
+      {/* Nether Portal – Cloud Fortress Citadel (spread far right-bottom) */}
+      <group ref={cloudRef} position={[10, 0, 5]}>
         <primitive object={cloudScene.clone()} />
       </group>
     </group>

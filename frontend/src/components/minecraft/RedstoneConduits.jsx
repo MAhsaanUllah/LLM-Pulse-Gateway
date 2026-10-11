@@ -1,13 +1,9 @@
 import React, { useRef, useEffect } from 'react';
 import { useFrame } from '@react-three/fiber';
+import { TOWER_POSITIONS } from './SignalMessenger';
 
-// Anchor nodes the redstone signals travel between (must match the voxel scene layout).
-const NODES = {
-  warden_tower: [0, 2.8, 0],
-  memory_vault: [-5, 1.6, 0],
-  local_slm: [5, 2.0, -3],
-  cloud_fortress: [5, 3.2, 3],
-};
+// Anchor nodes matching the spread layout
+const NODES = TOWER_POSITIONS;
 
 const EVENT_COLORS = {
   CACHE_HIT: '#55ff55',
@@ -19,19 +15,21 @@ const EVENT_COLORS = {
   ERROR: '#ff2222',
 };
 
-const POOL_SIZE = 16;
-const TRAVEL_SECONDS = 1.1;
+const POOL_SIZE = 20;
+const TRAVEL_SECONDS = 1.4;
 
 const nodeAt = (name) => NODES[name] || NODES.warden_tower;
 
 export default function RedstoneConduits({ pulseActive = false, signal = null }) {
-  const lineRef = useRef();
+  const lineVaultRef = useRef();
+  const lineSlmRef = useRef();
+  const lineCloudRef = useRef();
   const particleRefs = useRef([]);
   const particles = useRef([]);
 
-  // Spawn one travelling particle per incoming telemetry packet.
+  // Spawn travelling pulse particle when telemetry event occurs
   useEffect(() => {
-    if (!signal) return;
+    if (!signal || !signal.event) return;
     particles.current.push({
       from: nodeAt(signal.source),
       to: nodeAt(signal.destination),
@@ -44,9 +42,11 @@ export default function RedstoneConduits({ pulseActive = false, signal = null })
   }, [signal]);
 
   useFrame((state, delta) => {
-    if (lineRef.current && pulseActive) {
-      lineRef.current.material.opacity = 0.5 + Math.sin(state.clock.elapsedTime * 8) * 0.5;
-    }
+    const pulse = 0.4 + Math.sin(state.clock.elapsedTime * 6) * 0.4;
+
+    if (lineVaultRef.current) lineVaultRef.current.material.opacity = pulseActive ? pulse + 0.2 : 0.35;
+    if (lineSlmRef.current) lineSlmRef.current.material.opacity = pulseActive ? pulse + 0.2 : 0.35;
+    if (lineCloudRef.current) lineCloudRef.current.material.opacity = pulseActive ? pulse + 0.2 : 0.35;
 
     const active = particles.current;
     for (let i = active.length - 1; i >= 0; i--) {
@@ -64,39 +64,47 @@ export default function RedstoneConduits({ pulseActive = false, signal = null })
       mesh.visible = true;
       const [fx, fy, fz] = p.from;
       const [tx, ty, tz] = p.to;
-      const arc = Math.sin(Math.PI * p.t) * 1.2; // lift the signal mid-flight
+      const arc = Math.sin(Math.PI * p.t) * 1.5;
       mesh.position.set(
         fx + (tx - fx) * p.t,
         fy + (ty - fy) * p.t + arc,
         fz + (tz - fz) * p.t
       );
       mesh.material.color.set(p.color);
-      mesh.material.opacity = p.t < 0.75 ? 1 : 1 - (p.t - 0.75) / 0.25;
-      mesh.scale.setScalar(0.8 + Math.sin(p.t * Math.PI) * 0.9);
+      mesh.material.opacity = p.t < 0.8 ? 1 : 1 - (p.t - 0.8) / 0.2;
+      mesh.scale.setScalar(0.9 + Math.sin(p.t * Math.PI) * 0.7);
     });
   });
 
   return (
     <group>
-      {/* Floor Redstone Conduits */}
-      <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <planeGeometry args={[10, 10]} />
-        <meshStandardMaterial color="#111827" roughness={0.9} />
+      {/* 1. Conduit Pathway to Memory Vault (Warden [0,0] -> Memory Vault [-10, 0]) */}
+      <mesh ref={lineVaultRef} position={[-5, 0.04, 0]}>
+        <boxGeometry args={[10, 0.05, 0.35]} />
+        <meshBasicMaterial color="#00ffcc" transparent opacity={0.35} />
       </mesh>
 
-      {/* Pulsing Redstone Pathway to Memory Vault */}
-      <mesh ref={lineRef} position={[-2.5, 0.3, 0]}>
-        <boxGeometry args={[5, 0.06, 0.24]} />
-        <meshBasicMaterial color="#ff0044" transparent opacity={pulseActive ? 0.9 : 0.3} />
+      {/* 2. Conduit Pathway to Local SLM (Warden [0,0] -> Local SLM [10, -5]) */}
+      <mesh
+        ref={lineSlmRef}
+        position={[5, 0.04, -2.5]}
+        rotation={[0, -Math.atan2(5, 10), 0]}
+      >
+        <boxGeometry args={[Math.hypot(10, 5), 0.05, 0.35]} />
+        <meshBasicMaterial color="#ff6600" transparent opacity={0.35} />
       </mesh>
 
-      {/* Pathway to Model Fortress */}
-      <mesh position={[2.5, 0.3, 0]}>
-        <boxGeometry args={[5, 0.06, 0.24]} />
-        <meshBasicMaterial color="#ff3366" transparent opacity={0.4} />
+      {/* 3. Conduit Pathway to Cloud Fortress (Warden [0,0] -> Cloud Fortress [10, 5]) */}
+      <mesh
+        ref={lineCloudRef}
+        position={[5, 0.04, 2.5]}
+        rotation={[0, Math.atan2(5, 10), 0]}
+      >
+        <boxGeometry args={[Math.hypot(10, 5), 0.05, 0.35]} />
+        <meshBasicMaterial color="#aa00ff" transparent opacity={0.35} />
       </mesh>
 
-      {/* Glowing redstone particle signals travelling the conduits */}
+      {/* Travelling Energy Sparks along conduits */}
       {Array.from({ length: POOL_SIZE }).map((_, i) => (
         <mesh
           key={i}
@@ -105,8 +113,8 @@ export default function RedstoneConduits({ pulseActive = false, signal = null })
           }}
           visible={false}
         >
-          <sphereGeometry args={[0.14, 10, 10]} />
-          <meshBasicMaterial color="#ff0044" transparent opacity={1} />
+          <sphereGeometry args={[0.2, 10, 10]} />
+          <meshBasicMaterial color="#ffffff" transparent opacity={1} />
         </mesh>
       ))}
     </group>
