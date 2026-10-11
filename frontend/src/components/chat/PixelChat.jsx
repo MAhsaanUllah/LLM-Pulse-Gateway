@@ -11,54 +11,31 @@ export default function PixelChat({ onSendMessage, isPending }) {
   };
 
   return (
-    <div style={{
-      background: 'rgba(20, 20, 25, 0.85)',
-      border: '4px solid #4a4a5a',
-      borderRadius: '8px',
-      padding: '16px',
-      color: '#ffffff',
-      fontFamily: '"Courier New", Courier, monospace',
-      boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
-      maxWidth: '600px',
-      width: '100%'
-    }}>
-      <div style={{ marginBottom: '12px', fontSize: '14px', letterSpacing: '1px', color: '#55ff55' }}>
-        &gt; MINECRAFT GATEWAY COMMAND TERMINAL
+    <div className="w-full max-w-2xl bg-black/85 backdrop-blur-md border-4 border-slate-700 rounded-lg p-4 shadow-2xl text-white font-mono">
+      <div className="flex items-center justify-between mb-3 text-xs tracking-wider">
+        <span className="text-emerald-400 font-bold">&gt; MINECRAFT GATEWAY COMMAND TERMINAL</span>
+        <span className="text-slate-400 text-[10px]">STATUS: {isPending ? 'TRANSMITTING...' : 'ONLINE'}</span>
       </div>
-      
-      <form onSubmit={handleSubmit} style={{ display: 'flex', gap: '8px' }}>
+
+      <form onSubmit={handleSubmit} className="flex gap-2">
         <input
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask or dispatch an LLM query..."
+          placeholder="Ask a question or transmit an LLM instruction..."
           disabled={isPending}
-          style={{
-            flex: 1,
-            background: '#111218',
-            border: '2px solid #555566',
-            padding: '10px 14px',
-            color: '#fff',
-            fontFamily: 'inherit',
-            fontSize: '14px',
-            outline: 'none',
-          }}
+          className="flex-1 bg-slate-950 border-2 border-slate-700 px-4 py-2.5 text-sm text-white placeholder-slate-500 rounded outline-none focus:border-cyan-400 transition-colors disabled:opacity-50"
         />
         <button
           type="submit"
           disabled={isPending}
-          style={{
-            background: isPending ? '#555555' : '#2ecc71',
-            color: '#000',
-            fontWeight: 'bold',
-            border: '2px solid #27ae60',
-            padding: '0 20px',
-            cursor: isPending ? 'not-allowed' : 'pointer',
-            fontFamily: 'inherit',
-            textTransform: 'uppercase',
-          }}
+          className={`px-6 py-2.5 font-bold text-xs uppercase tracking-wider rounded border-2 transition-all ${
+            isPending
+              ? 'bg-slate-700 text-slate-400 border-slate-600 cursor-not-allowed'
+              : 'bg-emerald-500 text-slate-950 border-emerald-400 hover:bg-emerald-400 active:scale-95 cursor-pointer'
+          }`}
         >
-          {isPending ? 'PULSING...' : 'TRANSMIT'}
+          {isPending ? 'PULSING' : 'TRANSMIT'}
         </button>
       </form>
     </div>

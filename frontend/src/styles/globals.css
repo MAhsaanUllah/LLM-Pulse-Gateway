@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  padding: 0;
+  margin: 0;
+  background-color: #0a0d14;
+  color: #ffffff;
+  overflow: hidden;
+  font-family: "Courier New", Courier, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}

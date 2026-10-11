@@ -3,7 +3,7 @@ import dynamic from 'next/dynamic';
 import PixelChat from '../components/chat/PixelChat';
 import ScoreboardHUD from '../components/hud/ScoreboardHUD';
 
-// Dynamically import 3D Voxel canvas (SSR disabled for Three.js)
+// Dynamically import 3D Voxel canvas (SSR disabled for WebGL / Three.js)
 const VoxelCanvas = dynamic(() => import('../components/minecraft/VoxelCanvas'), {
   ssr: false,
 });
@@ -14,16 +14,16 @@ export default function Home() {
     isProcessing: false,
   });
   const [stats, setStats] = useState({
-    activeModel: "Llama 3.2 (Local)",
-    cacheHitRate: "82.1%",
-    avgLatency: "115 ms",
-    totalTokens: "152,800",
-    costSaved: "$18.40",
+    activeModel: 'Llama 3.2 (Local)',
+    cacheHitRate: '82.1%',
+    avgLatency: '115 ms',
+    totalTokens: '152,800',
+    costSaved: '$18.40',
   });
   const [isPending, setIsPending] = useState(false);
 
   useEffect(() => {
-    // Optional: Connect to backend WebSocket at ws://localhost:8000/ws/signals
+    // Optional WebSocket stream listener to backend gateway
     let ws;
     try {
       ws = new WebSocket('ws://localhost:8000/ws/signals');
@@ -38,8 +38,8 @@ export default function Home() {
           console.error('Failed to parse WebSocket packet', err);
         }
       };
-    } catch (e) {
-      console.warn('Backend WebSocket offline, running in mock telemetry mode');
+    } catch {
+      // Backend offline, fallback gracefully
     }
 
     return () => {
@@ -70,28 +70,32 @@ export default function Home() {
         avgLatency: `${data.latency_ms || 120} ms`,
       }));
     } catch (err) {
-      console.error(err);
-      // Fallback visual mock update
-      setTelemetry({ activeDestination: 'local_slm', isProcessing: false });
+      console.warn('Backend unavailable, simulating routing signal locally:', err);
+      // Heuristic visual fallback for preview
+      const isComplex = prompt.length > 50 || prompt.includes('code') || prompt.includes('sql');
+      setTelemetry({
+        activeDestination: isComplex ? 'cloud_fortress' : 'local_slm',
+        isProcessing: false,
+      });
     } finally {
       setIsPending(false);
     }
   };
 
   return (
-    <div style={{ position: 'relative', width: '100vw', height: '100vh', overflow: 'hidden', background: '#0a0d14' }}>
+    <main className="relative w-screen h-screen overflow-hidden bg-slate-950 font-mono">
       {/* 3D Voxel Scene */}
       <VoxelCanvas telemetry={telemetry} />
 
       {/* Holographic Scoreboard HUD */}
-      <div style={{ position: 'absolute', top: '24px', right: '24px', zIndex: 10 }}>
+      <div className="absolute top-6 right-6 z-20 pointer-events-auto">
         <ScoreboardHUD stats={stats} />
       </div>
 
       {/* Minecraft Command Chat */}
-      <div style={{ position: 'absolute', bottom: '24px', left: '50%', transform: 'translateX(-50%)', zIndex: 10, width: '90%', maxWidth: '600px' }}>
+      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 w-[92%] max-w-2xl pointer-events-auto">
         <PixelChat onSendMessage={handleSendMessage} isPending={isPending} />
       </div>
-    </div>
+    </main>
   );
 }

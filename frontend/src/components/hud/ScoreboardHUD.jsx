@@ -2,41 +2,41 @@ import React from 'react';
 
 export default function ScoreboardHUD({ stats = {} }) {
   const {
-    activeModel = "Ollama Llama 3.2",
-    cacheHitRate = "78.4%",
-    avgLatency = "142 ms",
-    totalTokens = "124,590",
-    costSaved = "$14.28"
+    activeModel = 'Ollama Llama 3.2',
+    cacheHitRate = '78.4%',
+    avgLatency = '142 ms',
+    totalTokens = '124,590',
+    costSaved = '$14.28',
   } = stats;
 
   return (
-    <div style={{
-      background: 'rgba(10, 10, 15, 0.8)',
-      border: '3px solid #ffaa00',
-      padding: '12px 18px',
-      color: '#fff',
-      fontFamily: '"Courier New", Courier, monospace',
-      boxShadow: '0 4px 16px rgba(255, 170, 0, 0.25)',
-      width: '240px',
-      fontSize: '13px',
-      lineHeight: '1.6'
-    }}>
-      <div style={{ 
-        color: '#ffaa00', 
-        fontWeight: 'bold', 
-        borderBottom: '2px dashed #ffaa00', 
-        paddingBottom: '4px',
-        marginBottom: '8px',
-        textAlign: 'center'
-      }}>
+    <div className="w-64 bg-slate-950/85 backdrop-blur-md border-2 border-amber-500 rounded p-3 text-white font-mono text-xs shadow-lg shadow-amber-500/10">
+      <div className="text-amber-400 font-bold border-b border-dashed border-amber-500/50 pb-1.5 mb-2.5 text-center tracking-wider">
         == GATEWAY SCOREBOARD ==
       </div>
 
-      <div><span style={{ color: '#aaaaaa' }}>Model:</span> <span style={{ color: '#55ffff' }}>{activeModel}</span></div>
-      <div><span style={{ color: '#aaaaaa' }}>Cache Hit:</span> <span style={{ color: '#55ff55' }}>{cacheHitRate}</span></div>
-      <div><span style={{ color: '#aaaaaa' }}>Latency:</span> <span style={{ color: '#ffff55' }}>{avgLatency}</span></div>
-      <div><span style={{ color: '#aaaaaa' }}>Tokens:</span> <span style={{ color: '#ff55ff' }}>{totalTokens}</span></div>
-      <div><span style={{ color: '#aaaaaa' }}>Cost Saved:</span> <span style={{ color: '#55ff55' }}>{costSaved}</span></div>
+      <div className="space-y-1.5">
+        <div className="flex justify-between items-center">
+          <span className="text-slate-400">Target Model:</span>
+          <span className="text-cyan-400 font-medium truncate max-w-[120px]">{activeModel}</span>
+        </div>
+        <div className="flex justify-between items-center">
+          <span className="text-slate-400">Cache Hit Rate:</span>
+          <span className="text-emerald-400 font-medium">{cacheHitRate}</span>
+        </div>
+        <div className="flex justify-between items-center">
+          <span className="text-slate-400">Avg Latency:</span>
+          <span className="text-yellow-300 font-medium">{avgLatency}</span>
+        </div>
+        <div className="flex justify-between items-center">
+          <span className="text-slate-400">Total Tokens:</span>
+          <span className="text-fuchsia-400 font-medium">{totalTokens}</span>
+        </div>
+        <div className="flex justify-between items-center">
+          <span className="text-slate-400">Cost Saved:</span>
+          <span className="text-emerald-400 font-bold">{costSaved}</span>
+        </div>
+      </div>
     </div>
   );
 }
