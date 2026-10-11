@@ -1,0 +1,121 @@
+# ==============================================================================
+# LLM Pulse Gateway - .gitignore
+# ==============================================================================
+
+# ------------------------------------------------------------------ Secrets ---
+# Never commit credentials, API keys, or environment files.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+*.secret
+
+# Sensitive system prompts / instruction files
+*secret*prompt*
+*prompt*secret*
+prompts/private/
+prompts/secret/
+*.private.prompt
+
+# ----------------------------------------------------------- Python / FastAPI ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+sdist/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Testing & coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+
+# ------------------------------------------------------------------ Node / Next.js ---
+node_modules/
+.next/
+out/
+.turbo/
+.vercel/
+.swc/
+*.tsbuildinfo
+next-env.d.ts
+
+# Package manager logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Frontend env overrides
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# ------------------------------------------------------- Local agent state ---
+.commandcode/
+
+# ------------------------------------------------------------------ Data / DB Caches ---
+# Local vector, cache, model artifacts, and database stores
+data/
+storage/
+redis_data/
+qdrant_data/
+qdrant_storage/
+ollama_data/
+*.sqlite
+*.sqlite3
+*.db
+*.rdb
+
+# ------------------------------------------------------------ Logs & runtime ---
+*.log
+logs/
+tmp/
+temp/
+
+# --------------------------------------------------------------- IDE / editor ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*.sublime-workspace
+.history/
+
+# ------------------------------------------------------------- DS & OS files ---
+.ipynb_checkpoints/
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
