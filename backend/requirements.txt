@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+qdrant-client
+sentence-transformers
+numpy
+httpx
+pytest
