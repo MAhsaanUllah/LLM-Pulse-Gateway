@@ -2,22 +2,22 @@ import React, { useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 
-/**
- * Memory Vault (Semantic Cache) imported directly from Blender .glb export
- */
+/** Ender Chest-style Memory Vault from Blender. Bounces when cache hit active. */
 export default function MemoryVault({ hit = false, position = [-5, 0, 0] }) {
   const { scene } = useGLTF('/models/memory_vault.glb');
-  const groupRef = useRef();
+  const ref = useRef();
 
   useFrame((state) => {
-    if (groupRef.current && hit) {
-      groupRef.current.position.y = Math.sin(state.clock.elapsedTime * 4) * 0.1;
+    if (ref.current && hit) {
+      ref.current.position.y = position[1] + Math.abs(Math.sin(state.clock.elapsedTime * 6)) * 0.25;
+    } else if (ref.current) {
+      ref.current.position.y = position[1];
     }
   });
 
   return (
-    <group ref={groupRef} position={position}>
-      <primitive object={scene.clone()} scale={[1, 1, 1]} />
+    <group ref={ref} position={position}>
+      <primitive object={scene.clone()} />
     </group>
   );
 }

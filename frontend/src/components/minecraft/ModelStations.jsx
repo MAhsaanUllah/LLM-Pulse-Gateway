@@ -2,25 +2,43 @@ import React, { useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 
-/**
- * Model Fortress (Local SLM + Cloud Bastion) imported directly from Blender .glb export
- */
-export default function ModelStations({ activeStation = null, position = [5, 0, 0] }) {
-  const { scene } = useGLTF('/models/model_fortress.glb');
-  const groupRef = useRef();
+/** Separate model stations: Blast Furnace (local SLM) + Nether Portal (cloud fortress). */
+export default function ModelStations({ activeStation = null }) {
+  const { scene: slmScene }   = useGLTF('/models/local_slm.glb');
+  const { scene: cloudScene } = useGLTF('/models/cloud_fortress.glb');
+
+  const slmRef   = useRef();
+  const cloudRef = useRef();
 
   useFrame((state, delta) => {
-    if (groupRef.current && activeStation) {
-      // Subtle pulse when a model route is active
-      groupRef.current.position.y = Math.sin(state.clock.elapsedTime * 3) * 0.05;
+    // Local SLM: slight bob when active
+    if (slmRef.current) {
+      if (activeStation === 'local_slm') {
+        slmRef.current.position.y = Math.sin(state.clock.elapsedTime * 5) * 0.07;
+      } else {
+        slmRef.current.position.y = 0;
+      }
+    }
+    // Cloud Fortress: slow Y rotation always, faster when active
+    if (cloudRef.current) {
+      cloudRef.current.rotation.y += delta * (activeStation === 'cloud_fortress' ? 1.8 : 0.3);
     }
   });
 
   return (
-    <group ref={groupRef} position={position}>
-      <primitive object={scene.clone()} scale={[1, 1, 1]} />
+    <group>
+      {/* Blast Furnace – Local SLM Outpost */}
+      <group ref={slmRef} position={[5.5, 0, -2.5]}>
+        <primitive object={slmScene.clone()} />
+      </group>
+
+      {/* Nether Portal – Cloud Fortress Citadel */}
+      <group ref={cloudRef} position={[5.5, 0, 3.0]}>
+        <primitive object={cloudScene.clone()} />
+      </group>
     </group>
   );
 }
 
-useGLTF.preload('/models/model_fortress.glb');
+useGLTF.preload('/models/local_slm.glb');
+useGLTF.preload('/models/cloud_fortress.glb');

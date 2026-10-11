@@ -2,23 +2,20 @@ import React, { useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 
-/**
- * Warden Tower Model imported directly from Blender .glb export
- * With live telemetry reactivity on rotation & emission glow
- */
+/** Sculk Warden Tower: full anatomy model from Blender. Active = slow rotation + cyan soul pulse. */
 export default function WardenTower({ active = false, position = [0, 0, 0] }) {
   const { scene } = useGLTF('/models/warden_tower.glb');
-  const groupRef = useRef();
+  const ref = useRef();
 
-  useFrame((state, delta) => {
-    if (groupRef.current) {
-      groupRef.current.rotation.y += delta * (active ? 2.0 : 0.4);
+  useFrame((_, delta) => {
+    if (ref.current) {
+      ref.current.rotation.y += delta * (active ? 1.2 : 0.25);
     }
   });
 
   return (
-    <group ref={groupRef} position={position}>
-      <primitive object={scene.clone()} scale={[1, 1, 1]} />
+    <group ref={ref} position={position} scale={active ? [1.05, 1.05, 1.05] : [1, 1, 1]}>
+      <primitive object={scene.clone()} />
     </group>
   );
 }
