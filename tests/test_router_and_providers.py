@@ -75,6 +75,12 @@ def test_smart_router_premium_tier():
 
 def test_provider_manager_fallback():
     """Verify provider manager executes completion and handles simulated fallbacks."""
+    import app.core.providers as providers_module
+
+    # Force the offline built-in engine so the test never reaches a live provider.
+    original_litellm_flag = providers_module.LITELLM_AVAILABLE
+    providers_module.LITELLM_AVAILABLE = False
+
     async def _run_async_test():
         manager = ProviderManager()
         
@@ -94,7 +100,10 @@ def test_provider_manager_fallback():
         cloud_norm = manager._normalize_model_name("gpt-4o-mini")
         assert cloud_norm == "gpt-4o-mini"
 
-    asyncio.run(_run_async_test())
+    try:
+        asyncio.run(_run_async_test())
+    finally:
+        providers_module.LITELLM_AVAILABLE = original_litellm_flag
     print("[PASS] test_provider_manager_fallback")
 
 
