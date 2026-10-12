@@ -74,7 +74,8 @@ in-memory index with a logged warning — **that cache is lost on restart**.
 `backend/app/api/gateway.py` runs five steps, broadcasting a `SignalPacket` between each:
 
 1. `CACHE_MISS` / `CACHE_HIT` — semantic lookup
-2. `ROUTING_SIGNAL` — chosen destination, model, estimated cost, reason
+2. `ROUTING_SIGNAL` — chosen destination, model, estimated cost, reason, and the
+   complexity breakdown (score, word count, heuristic hits) behind that reason
 3. `MODEL_EXECUTION` — cascade attempt
 4. `EVALUATION` — pass/fail on the two observable checks
 5. `COMPLETION` — latency, model, tokens, status, `truncated`
@@ -189,7 +190,8 @@ which is how a "quick" local answer turns into a 1500-token essay. Defaults:
 
 When a reply hits the budget, Ollama reports `done_reason: "length"`, the response
 carries **`truncated: true`**, and the answer is **not written to the cache** — a
-cut-off reply must never be replayed as if it were complete.
+cut-off reply must never be replayed as if it were complete. A `simulated` stand-in
+is not cached either: it is generated from the prompt by code, not answered by a model.
 
 ---
 

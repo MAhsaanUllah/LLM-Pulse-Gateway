@@ -1,6 +1,6 @@
 import re
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 from dataclasses import dataclass, field
 
 from config import settings
@@ -29,10 +29,6 @@ SIMPLE_INDICATORS = [
 @dataclass
 class ComplexityMetrics:
     token_count: int
-    char_count: int
-    complex_keyword_hits: int
-    code_block_count: int
-    question_count: int
     complexity_score: float  # Normalized 0.0 (trivial) to 1.0 (extreme complexity)
     is_hard_query: bool
     reasons: List[str] = field(default_factory=list)
@@ -41,24 +37,16 @@ class ComplexityMetrics:
 class SmartRouter:
     """
     Cost-Aware Smart Router.
-    Calculates prompt complexity metrics (length, structure, domain semantics, code snippets)
-    to route simple/easy queries to local SLMs (zero marginal cost) and complex/hard queries
-    to Cloud Fortress (OpenAI GPT-4o / Anthropic Claude 3.5 Sonnet).
+    Scores prompt complexity (length, domain keywords, code blocks) and routes easy
+    queries to the local SLM at zero marginal cost, hard ones to a cloud model.
     """
 
-    def __init__(
-        self,
-        token_threshold: int = 80,
-        complexity_score_threshold: float = 0.40,
-        default_local_model: Optional[str] = None,
-        default_cloud_model: Optional[str] = None,
-        premium_cloud_model: str = "claude-3-5-sonnet-20241022",
-    ):
-        self.token_threshold = token_threshold
-        self.complexity_score_threshold = complexity_score_threshold
-        self.default_local_model = default_local_model or f"ollama/{settings.OLLAMA_MODEL}"
-        self.default_cloud_model = default_cloud_model or settings.DEFAULT_GEMINI_MODEL
-        self.premium_cloud_model = premium_cloud_model
+    def __init__(self):
+        self.token_threshold = 80
+        self.complexity_score_threshold = 0.40
+        self.default_local_model = f"ollama/{settings.OLLAMA_MODEL}"
+        self.default_cloud_model = settings.DEFAULT_GEMINI_MODEL
+        self.premium_cloud_model = settings.DEFAULT_ANTHROPIC_MODEL
 
         # Pre-compile regexes
         self._complex_patterns = [re.compile(p, re.IGNORECASE) for p in COMPLEX_INDICATORS]
@@ -73,7 +61,6 @@ class SmartRouter:
         """
         words = prompt.strip().split()
         token_count = len(words)
-        char_count = len(prompt)
 
         # Detect code blocks
         code_blocks = len(re.findall(r"```[\s\S]*?```", prompt))
@@ -127,10 +114,6 @@ class SmartRouter:
 
         return ComplexityMetrics(
             token_count=token_count,
-            char_count=char_count,
-            complex_keyword_hits=complex_hits,
-            code_block_count=code_blocks,
-            question_count=question_count,
             complexity_score=complexity_score,
             is_hard_query=is_hard,
             reasons=reasons,

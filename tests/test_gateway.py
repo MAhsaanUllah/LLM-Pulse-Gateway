@@ -93,6 +93,28 @@ def test_a_cut_off_answer_is_never_stored_in_the_cache():
     print("[PASS] test_a_cut_off_answer_is_never_stored_in_the_cache")
 
 
+def test_a_stand_in_answer_is_never_stored_in_the_cache():
+    """The stand-in text is generated from the prompt, not from a model, so caching it
+    would let a later near-identical prompt replay it as if a model had finally answered."""
+    cache = StubCache()
+    gateway_module.cache_service = cache
+    gateway_module.provider_manager = StubProvider(completion={
+        "content": "SIMULATED: no model answered",
+        "model_used": "ollama/qwen3.5:4b (stand-in)",
+        "provider": "none",
+        "status": "simulated",
+        "tokens_used": 0,
+        "metadata": {"attempted": []},
+    })
+
+    body = TestClient(main.app).post("/api/gateway/chat", json={"prompt": "Hello there"}).json()
+
+    assert body["status"] == "simulated"
+    assert cache.stored == []
+
+    print("[PASS] test_a_stand_in_answer_is_never_stored_in_the_cache")
+
+
 def test_gateway_cache_miss_flow():
     client = _client()
     resp = client.post("/api/gateway/chat", json={"prompt": "Hello there"})
@@ -211,6 +233,9 @@ def test_websocket_emits_step_packets():
 
 if __name__ == "__main__":
     test_gateway_cache_miss_flow()
+    test_gateway_reports_when_the_answer_was_cut_short_by_the_token_budget()
+    test_a_cut_off_answer_is_never_stored_in_the_cache()
+    test_a_stand_in_answer_is_never_stored_in_the_cache()
     test_gateway_reports_provenance_of_a_simulated_answer()
     test_gateway_cache_hit_flow()
     test_gateway_returns_its_own_signal_trail()

@@ -1,8 +1,5 @@
-import os
-import sys
 import logging
 from typing import Dict, Any, List, Optional
-from dataclasses import dataclass, field
 import httpx
 
 from config import settings
@@ -35,44 +32,28 @@ CLOUD_PROVIDERS = [
 ]
 
 
-@dataclass
-class CompletionResult:
-    content: str
-    model_used: str
-    provider: str
-    status: str
-    tokens_used: int = 0
-    latency_ms: float = 0.0
-    fallback_triggered: bool = False
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-
 class ProviderManager:
     """
-    Production-Grade LLM Provider Orchestrator for LLM Pulse Gateway.
-    
-    Supports:
-    1. Local SLM (Ollama) on localhost:11434
-    2. Google Gemini (Native HTTPX + LiteLLM support with GEMINI_API_KEY / GOOGLE_API_KEY)
-    3. DeepSeek (native HTTPX with DEEPSEEK_API_KEY)
-    4. Cloud Fortress (OpenAI GPT-4o, Anthropic Claude 3.5 Sonnet via LiteLLM)
-    5. Resilient Fallback: If Ollama is offline or uninstalled, automatically shifts
-       traffic to a cloud tier or the simulated engine without crashing with 500 errors.
+    LLM provider orchestrator: cascades one request through every tier that can
+    actually answer it, in order of cost.
+
+    1. Local SLM through Ollama (zero marginal cost)
+    2. Google Gemini (native HTTPX)
+    3. DeepSeek (native HTTPX)
+    4. Cloud providers through LiteLLM (OpenAI / Anthropic / Groq / xAI / OpenRouter)
+    5. A labelled stand-in, so the gateway answers with provenance instead of a 500
+
+    Tiers 2-4 use the caller's own key when the request carries one, else the
+    operator's key from `.env`; a tier with no key is skipped, not failed.
     """
 
     def __init__(
         self,
         ollama_base_url: Optional[str] = None,
-        primary_slm_model: Optional[str] = None,
         default_gemini_model: Optional[str] = None,
-        cloud_fallback_model: str = "gpt-4o-mini",
-        claude_fallback_model: str = "claude-3-5-sonnet-20241022",
     ):
         self.ollama_base_url = ollama_base_url or settings.OLLAMA_BASE_URL
-        self.primary_slm_model = primary_slm_model or f"ollama/{settings.OLLAMA_MODEL}"
         self.default_gemini_model = default_gemini_model or settings.DEFAULT_GEMINI_MODEL
-        self.cloud_fallback_model = cloud_fallback_model
-        self.claude_fallback_model = claude_fallback_model
 
     @staticmethod
     def _redact(text: str, secret: Optional[str]) -> str:
@@ -86,12 +67,7 @@ class ProviderManager:
         """The caller's own key pays for the call, so it wins over the operator's key."""
         if byok and byok.gemini_api_key:
             return byok.gemini_api_key
-        return (
-            settings.GEMINI_API_KEY
-            or settings.GOOGLE_API_KEY
-            or os.environ.get("GEMINI_API_KEY")
-            or os.environ.get("GOOGLE_API_KEY")
-        )
+        return settings.GEMINI_API_KEY or settings.GOOGLE_API_KEY
 
     async def _call_gemini_direct(
         self,
@@ -152,7 +128,7 @@ class ProviderManager:
     def get_deepseek_key(self, byok: Optional[BYOKCredentials] = None) -> Optional[str]:
         if byok and byok.deepseek_api_key:
             return byok.deepseek_api_key
-        return settings.DEEPSEEK_API_KEY or os.environ.get("DEEPSEEK_API_KEY")
+        return settings.DEEPSEEK_API_KEY
 
     async def _call_deepseek_direct(
         self,
@@ -208,8 +184,6 @@ class ProviderManager:
         except Exception as exc:
             logger.warning("[DeepSeek Direct] Request failed: %s", exc)
             return {"error": type(exc).__name__}
-
-        return None
 
     async def _call_ollama_direct(
         self,
@@ -271,7 +245,7 @@ class ProviderManager:
             own = getattr(byok, entry["key_field"], None)
             if own:
                 return own, "byok"
-        host = getattr(settings, entry["key_setting"], None) or os.environ.get(entry["key_setting"])
+        host = getattr(settings, entry["key_setting"], None)
         if host:
             return host, "operator"
         return None, None
@@ -289,8 +263,6 @@ class ProviderManager:
             return "groq"
         if m.startswith("openrouter/"):
             return "openrouter"
-        if "gemini" in m:
-            return "gemini"
         return None
 
     def _cloud_candidates(self, requested_model: str, byok: Optional[BYOKCredentials]) -> List[Dict[str, Any]]:
@@ -355,22 +327,15 @@ class ProviderManager:
         self,
         model: str,
         messages: List[Dict[str, str]],
-        temperature: float = 0.7,
-        max_tokens: int = 1024,
-        allow_fallback: bool = True,
         byok: Optional[BYOKCredentials] = None,
-        **kwargs: Any,
     ) -> Dict[str, Any]:
         """
-        Executes completion with resilient cascading fallback:
-        1. Target model (e.g. Local SLM via Ollama)
-        2. Google Gemini (caller's BYOK key, else GEMINI_API_KEY)
-        3. DeepSeek (caller's BYOK key, else DEEPSEEK_API_KEY)
-        4. Cloud Fortress (OpenAI / Claude via LiteLLM)
-        5. Intelligent Stand-In Simulation (Zero Crash Guarantee)
+        Runs the cascade in the class docstring and returns the first tier that
+        answers, always with provenance: which model served it, whether it was a
+        fallback, and what every skipped tier was skipped for.
         """
         user_prompt = messages[-1].get("content", "") if messages else ""
-        is_local_target = model.startswith("ollama") or "llama" in model.lower()
+        is_local_target = model.startswith("ollama")
         attempted: List[Dict[str, str]] = []
 
         # -------------------------------------------------------------
@@ -471,10 +436,9 @@ class ProviderManager:
                     res = await litellm.acompletion(
                         model=candidate["model"],
                         messages=messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
+                        temperature=0.7,
+                        max_tokens=1024,
                         api_key=candidate["api_key"],
-                        **kwargs,
                     )
                     content = res.choices[0].message.content
                     usage = getattr(res, "usage", None)
@@ -504,7 +468,7 @@ class ProviderManager:
             attempted.append({"tier": "litellm", "outcome": "skipped: litellm not installed"})
 
         # -------------------------------------------------------------
-        # 4. ZERO-CRASH RESILIENT SIMULATION ENGINE
+        # 5. ZERO-CRASH RESILIENT SIMULATION ENGINE
         # -------------------------------------------------------------
         logger.info("[ProviderManager] Engaging resilient gateway simulation engine.")
         cascade = "; ".join(f"{a['tier']} -> {a['outcome']}" for a in attempted) or "no tier was reachable"
@@ -522,7 +486,7 @@ class ProviderManager:
             "model_used": f"{model} (stand-in)",
             "provider": "none",
             "status": "simulated",
-            "fallback_triggered": True,
+            "fallback_triggered": is_local_target,
             "tokens_used": 0,
             "metadata": {
                 "source": "stand_in",

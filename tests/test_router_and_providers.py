@@ -86,6 +86,30 @@ def test_smart_router_uses_configured_models():
     print("[PASS] test_smart_router_uses_configured_models")
 
 
+def test_a_cloud_model_named_llama_is_never_sent_to_ollama():
+    """Groq's default model is llama-3.3-70b-versatile. The local tier must be chosen by
+    the ollama/ prefix alone, or the gateway would ask Ollama for a model it never pulled."""
+    manager = ProviderManager()
+    asked = []
+
+    async def spy(messages, model_name):
+        asked.append(model_name)
+        return None
+
+    manager._call_ollama_direct = spy
+    manager.get_gemini_key = lambda byok=None: None
+    providers_module.LITELLM_AVAILABLE = False
+
+    result = asyncio.run(
+        manager.execute_completion(model="groq/llama-3.3-70b-versatile", messages=[{"role": "user", "content": "hi"}])
+    )
+
+    assert asked == []
+    assert result["status"] == "simulated"
+    assert result["fallback_triggered"] is False
+    print("[PASS] test_a_cloud_model_named_llama_is_never_sent_to_ollama")
+
+
 def test_provider_local_success():
     """A healthy Ollama answer is reported as success with its real token count."""
     manager = ProviderManager()
@@ -442,6 +466,7 @@ if __name__ == "__main__":
     test_smart_router_hard_queries()
     test_smart_router_premium_tier()
     test_smart_router_uses_configured_models()
+    test_a_cloud_model_named_llama_is_never_sent_to_ollama()
     test_provider_local_success()
     test_provider_stand_in_is_labelled()
     test_provider_gemini_is_reported_as_cloud()

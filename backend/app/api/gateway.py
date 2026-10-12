@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 import time
-from typing import List
+from typing import List, Optional
 
 from app.api.websocket import SignalEvent, SignalPacket, stream_manager
 from app.core.cache import cache_service
@@ -44,7 +44,7 @@ async def process_gateway_request(req: GatewayRequest) -> StructuredPulseRespons
         return round((time.time() - start_time) * 1000, 2)
 
     def ledger(route: str, model: str, status: str, cache_hit: bool, tokens: int, cost: float,
-               key_source: str = None, latency: float = None) -> None:
+               key_source: Optional[str] = None, latency: Optional[float] = None) -> None:
         usage_ledger.record(
             route=route,
             model=model,
@@ -100,6 +100,7 @@ async def process_gateway_request(req: GatewayRequest) -> StructuredPulseRespons
             "model": target_model,
             "estimated_cost": route_decision["estimated_cost"],
             "reason": route_decision["reason"],
+            "complexity": route_decision["complexity_metrics"],
         },
     )
 
@@ -133,7 +134,9 @@ async def process_gateway_request(req: GatewayRequest) -> StructuredPulseRespons
     # Step 5: Populate cache and emit completion
     latency_ms = elapsed_ms()
     truncated = bool(completion.get("truncated"))
-    if not truncated:
+    # A truncated answer is half a sentence, and a stand-in is the prompt echoed by
+    # code — caching either would replay it forever as if a model had answered.
+    if not truncated and completion["status"] != "simulated":
         await cache_service.set(
             req.prompt,
             completion["content"],
