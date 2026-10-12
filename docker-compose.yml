@@ -1,13 +1,4 @@
 services:
-  redis:
-    image: redis/redis-stack-server:latest
-    container_name: pulse_redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    restart: unless-stopped
-
   qdrant:
     image: qdrant/qdrant:latest
     container_name: pulse_qdrant
@@ -28,6 +19,5 @@ services:
     restart: unless-stopped
 
 volumes:
-  redis_data:
   qdrant_data:
   ollama_data:
