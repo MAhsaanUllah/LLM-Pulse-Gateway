@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import Dict, Any, List, Optional
 import httpx
@@ -322,6 +323,119 @@ class ProviderManager:
         except Exception as exc:
             logger.info("[ProviderManager] Local model detection failed on %s: %s", url, exc)
         return {"available": False, "base_url": self.ollama_base_url, "models": []}
+
+    async def _stream_ollama(
+        self,
+        messages: List[Dict[str, str]],
+        model_name: str,
+        summary: Dict[str, Any],
+    ):
+        """Yield answer pieces from the local daemon and record the totals in `summary`.
+
+        Ollama answers NDJSON: one object per token run, the last one carrying
+        `done_reason` and the real token counts.
+        """
+        clean_model = model_name.replace("ollama/", "")
+        url = f"{self.ollama_base_url.rstrip('/')}/api/chat"
+        payload = {
+            "model": clean_model,
+            "messages": [{"role": m.get("role", "user"), "content": m.get("content", "")} for m in messages],
+            "stream": True,
+            "think": False,
+            "options": {"num_ctx": settings.OLLAMA_NUM_CTX, "num_predict": settings.OLLAMA_NUM_PREDICT},
+            "keep_alive": settings.OLLAMA_KEEP_ALIVE,
+        }
+        pieces: List[str] = []
+        done: Dict[str, Any] = {}
+        summary["answered"] = False
+        try:
+            async with httpx.AsyncClient(timeout=settings.INFERENCE_TIMEOUT_SECONDS) as client:
+                async with client.stream("POST", url, json=payload) as res:
+                    if res.status_code != 200:
+                        body = (await res.aread()).decode(errors="replace")
+                        logger.warning(
+                            "[Ollama Stream] %s rejected model '%s' (HTTP %s): %s",
+                            url, clean_model, res.status_code, body[:200],
+                        )
+                        return
+                    async for line in res.aiter_lines():
+                        if not line.strip():
+                            continue
+                        event = json.loads(line)
+                        piece = (event.get("message") or {}).get("content") or ""
+                        if piece:
+                            pieces.append(piece)
+                            yield piece
+                        if event.get("done"):
+                            done = event
+        except httpx.HTTPError as exc:
+            logger.warning("[Ollama Stream] Service failed on %s (%s)", self.ollama_base_url, exc)
+            return
+
+        content = "".join(pieces)
+        if not content.strip():
+            logger.warning("[Ollama Stream] '%s' streamed no content — treating as a miss", clean_model)
+            return
+        summary.update({
+            "content": content,
+            "model": f"ollama/{clean_model}",
+            "tokens": int(done.get("prompt_eval_count", 0)) + int(done.get("eval_count", 0)),
+            "truncated": done.get("done_reason") == "length",
+            "answered": True,
+        })
+
+    async def stream_completion(
+        self,
+        model: str,
+        messages: List[Dict[str, str]],
+        byok: Optional[BYOKCredentials] = None,
+    ):
+        """Yield `{'kind': 'delta', 'text': ...}` pieces, then one
+        `{'kind': 'final', ...}` record shaped like execute_completion's.
+
+        Only the local daemon streams token by token; every other tier answers as one
+        block, so its caller sees a single delta.
+        ponytail: per-provider cloud streaming needs astream calls — worth adding when
+        a cloud tier becomes the usual route, not while local answers the simple ones.
+        """
+        streamed: List[str] = []
+        if model.startswith("ollama"):
+            summary: Dict[str, Any] = {}
+            async for piece in self._stream_ollama(messages, model, summary):
+                streamed.append(piece)
+                yield {"kind": "delta", "text": piece}
+            if summary.get("answered"):
+                yield {
+                    "kind": "final",
+                    "content": summary["content"],
+                    "model_used": summary["model"],
+                    "provider": "local_slm",
+                    "status": "success",
+                    "fallback_triggered": False,
+                    "tokens_used": summary["tokens"],
+                    "truncated": summary["truncated"],
+                    "metadata": {"source": "ollama_native_stream", "attempted": []},
+                }
+                return
+            if streamed:
+                # The daemon started answering and stopped mid-stream. Re-asking would
+                # replay text the caller already has, so report what actually arrived.
+                yield {
+                    "kind": "final",
+                    "content": "".join(streamed),
+                    "model_used": f"ollama/{model.replace('ollama/', '')}",
+                    "provider": "local_slm",
+                    "status": "success",
+                    "fallback_triggered": False,
+                    "tokens_used": 0,
+                    "truncated": True,
+                    "metadata": {"source": "ollama_native_stream_incomplete", "attempted": []},
+                }
+                return
+
+        result = await self.execute_completion(model=model, messages=messages, byok=byok)
+        yield {"kind": "delta", "text": result["content"]}
+        yield {"kind": "final", **result}
 
     async def execute_completion(
         self,

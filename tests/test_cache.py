@@ -1,7 +1,7 @@
 """
 Unit tests for the semantic cache engine: the threshold gate, the query-keyed
-upsert, and both index backends (Qdrant and the in-memory fallback).
-Runnable via `python -m pytest` from the repo root, fully offline.
+upsert, expiry, restart durability, and both index backends (Qdrant and the
+in-memory fallback). Runnable via `python -m pytest` from the repo root, fully offline.
 """
 
 import os
@@ -13,10 +13,12 @@ if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
 import asyncio
+import time
 
 from qdrant_client import QdrantClient
 
 from app.core.cache import InMemoryIndex, QdrantIndex, SemanticCache
+from config import settings
 
 # Deterministic unit vectors: cosine(A, A_CLOSE) = 0.95, cosine(A, B) = 0.0
 A = [1.0, 0.0, 0.0]
@@ -95,6 +97,96 @@ def test_broken_embedder_degrades_to_miss():
     assert asyncio.run(cache.get("alpha")) is None
     asyncio.run(cache.set("alpha", "RESP"))  # must not raise
     print("[PASS] test_broken_embedder_degrades_to_miss")
+
+
+def test_storing_an_entry_records_when_it_was_stored():
+    """Expiry needs an age on the entry itself, not on the process."""
+    index = InMemoryIndex()
+    cache = make_cache(index)
+    asyncio.run(cache.set("alpha", "RESP"))
+    stored_at = index._entries["alpha"][1]["stored_at"]
+    assert abs(stored_at - time.time()) < 5
+    print("[PASS] test_storing_an_entry_records_when_it_was_stored")
+
+
+def test_an_entry_older_than_the_ttl_is_a_miss(monkeypatch):
+    """A stale answer is not the same answer: models change, and a gateway that caches
+    forever serves the wrong thing with total confidence."""
+    monkeypatch.setattr(settings, "CACHE_TTL_SECONDS", 60)
+    for label, index in indexes().items():
+        cache = make_cache(index)
+        index.upsert("alpha", A, {"query": "alpha", "response": "STALE", "metadata": {},
+                                 "stored_at": time.time() - 120})
+        assert asyncio.run(cache.get("alpha")) is None, label
+    print("[PASS] test_an_entry_older_than_the_ttl_is_a_miss")
+
+
+def test_an_entry_inside_the_ttl_still_hits(monkeypatch):
+    """The other half of the gate: expiry must not turn the cache into a no-op."""
+    monkeypatch.setattr(settings, "CACHE_TTL_SECONDS", 60)
+    for label, index in indexes().items():
+        cache = make_cache(index)
+        asyncio.run(cache.set("alpha", "FRESH"))
+        hit = asyncio.run(cache.get("alpha"))
+        assert hit is not None, label
+        assert hit["response"] == "FRESH", label
+    print("[PASS] test_an_entry_inside_the_ttl_still_hits")
+
+
+def test_a_ttl_of_zero_never_expires(monkeypatch):
+    monkeypatch.setattr(settings, "CACHE_TTL_SECONDS", 0)
+    index = InMemoryIndex()
+    cache = make_cache(index)
+    index.upsert("alpha", A, {"query": "alpha", "response": "ANCIENT", "metadata": {},
+                              "stored_at": 0.0})
+    assert asyncio.run(cache.get("alpha"))["response"] == "ANCIENT"
+    print("[PASS] test_a_ttl_of_zero_never_expires")
+
+
+def test_the_in_memory_index_survives_a_restart(tmp_path):
+    """Without Qdrant the cache lives in the process, so a restart used to mean every
+    prompt paid for a model call again. The file is what makes it durable."""
+    path = str(tmp_path / "semantic_cache.json")
+    first = InMemoryIndex(persist_path=path)
+    first.upsert("alpha", A, {"query": "alpha", "response": "RESP", "metadata": {"model": "local_slm"},
+                              "stored_at": time.time()})
+    assert os.path.exists(path)
+
+    second = InMemoryIndex(persist_path=path)
+    found = second.search(A_CLOSE, 0.90)
+    assert found is not None
+    assert found[1]["response"] == "RESP"
+    print("[PASS] test_the_in_memory_index_survives_a_restart")
+
+
+def test_a_corrupt_cache_file_starts_empty_instead_of_crashing(tmp_path):
+    path = tmp_path / "semantic_cache.json"
+    path.write_text("{ not json", encoding="utf-8")
+    index = InMemoryIndex(persist_path=str(path))
+    assert index.search(A, 0.90) is None
+    index.upsert("alpha", A, {"query": "alpha", "response": "RESP", "metadata": {}})
+    assert len(index._entries) == 1
+    print("[PASS] test_a_corrupt_cache_file_starts_empty_instead_of_crashing")
+
+
+def test_clearing_empties_the_index_and_drops_the_file(tmp_path):
+    path = str(tmp_path / "semantic_cache.json")
+    index = InMemoryIndex(persist_path=path)
+    index.upsert("alpha", A, {"query": "alpha", "response": "RESP", "metadata": {}})
+    index.clear()
+    assert index._entries == {}
+    assert not os.path.exists(path)
+    assert InMemoryIndex(persist_path=path).search(A, 0.90) is None
+    print("[PASS] test_clearing_empties_the_index_and_drops_the_file")
+
+
+def test_clearing_a_qdrant_index_leaves_nothing_to_hit():
+    index = QdrantIndex(QdrantClient(location=":memory:"), "test_clear")
+    index.upsert("alpha", A, {"query": "alpha", "response": "RESP", "metadata": {}})
+    assert index.search(A, 0.90) is not None
+    index.clear()
+    assert index.search(A, 0.90) is None
+    print("[PASS] test_clearing_a_qdrant_index_leaves_nothing_to_hit")
 
 
 if __name__ == "__main__":

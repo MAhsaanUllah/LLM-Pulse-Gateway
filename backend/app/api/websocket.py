@@ -5,6 +5,8 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 import logging
 
+from app.core.guard import authorize_socket
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -65,6 +67,8 @@ stream_manager = SignalStreamManager()
 
 @router.websocket("/ws/signals")
 async def websocket_signals_endpoint(websocket: WebSocket) -> None:
+    if not await authorize_socket(websocket):
+        return
     await stream_manager.connect(websocket)
     try:
         while True:

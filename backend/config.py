@@ -39,6 +39,16 @@ class Settings(BaseSettings):
     # Usage ledger (SQLite, standard library). Gitignored local file; delete it to reset.
     USAGE_DB_PATH: str = "data/usage.sqlite"
 
+    # Gates. The gateway routes real money and real compute, so an open :8000 lets
+    # anyone who can reach it spend the host's keys. Leave GATEWAY_TOKEN unset for
+    # local-only work; set it before binding to anything but 127.0.0.1.
+    GATEWAY_TOKEN: Optional[str] = None
+    RATE_LIMIT_PER_MINUTE: int = 60
+    # Cached answers expire so a stale or wrong one cannot replay forever. 0 = never.
+    CACHE_TTL_SECONDS: int = 86400
+    # Without Qdrant the index lives in this file, so a restart keeps its answers.
+    CACHE_FILE_PATH: str = "data/semantic_cache.json"
+
     # Cloud LLM API Keys
     OPENAI_API_KEY: Optional[str] = None
     ANTHROPIC_API_KEY: Optional[str] = None

@@ -23,12 +23,17 @@ class StubCache:
     def __init__(self, hit=None):
         self.hit = hit
         self.stored = []
+        self.cleared = 0
 
     async def get(self, query):
         return self.hit
 
     async def set(self, query, response, metadata=None):
         self.stored.append((query, response, metadata))
+
+    async def clear(self):
+        self.cleared += 1
+        return "stub"
 
 
 class StubProvider:
@@ -277,6 +282,16 @@ def test_websocket_emits_step_packets():
     print("[PASS] test_websocket_emits_step_packets")
 
 
+def test_the_operator_can_wipe_the_cache_without_a_restart():
+    """A demo that stored a stand-in answer needs to forget it; the alternative is
+    deleting a file by hand while the process still holds it in memory."""
+    client = _client()
+    response = client.post("/api/gateway/cache/clear")
+    assert response.status_code == 200
+    assert gateway_module.cache_service.cleared == 1
+    print("[PASS] test_the_operator_can_wipe_the_cache_without_a_restart")
+
+
 if __name__ == "__main__":
     test_gateway_cache_miss_flow()
     test_gateway_reports_when_the_answer_was_cut_short_by_the_token_budget()
@@ -290,4 +305,5 @@ if __name__ == "__main__":
     test_evaluation_reports_a_stand_in_as_failed()
     test_gateway_caches_with_provenance_metadata()
     test_websocket_emits_step_packets()
+    test_the_operator_can_wipe_the_cache_without_a_restart()
     print("\nALL GATEWAY / TELEMETRY TESTS PASSED!")

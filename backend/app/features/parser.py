@@ -1,12 +1,25 @@
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
+from typing import Literal, Optional, List, Dict, Any
 
 from app.core.credentials import BYOKCredentials
+
+# The local context window is 4096 tokens counting the prompt, so an unbounded
+# history from the browser would crowd out the answer it is there to get.
+MAX_HISTORY_TURNS = 12
+
+
+class ChatTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
 
 
 class GatewayRequest(BaseModel):
     prompt: str = Field(..., description="User prompt or instruction")
     tier: str = Field(default="standard", description="User subscription/priority tier (standard, premium)")
+    history: List[ChatTurn] = Field(
+        default_factory=list,
+        description="Earlier turns of this conversation, oldest first; only the most recent are carried",
+    )
     byok: Optional[BYOKCredentials] = Field(
         default=None, description="Caller-supplied cloud keys, honoured for this request only"
     )
@@ -70,3 +83,8 @@ class ModelsResponse(BaseModel):
     base_url: str
     models: List[LocalModel] = []
     providers: List[ProviderStatus] = []
+
+
+class CacheClearResponse(BaseModel):
+    status: Literal["cleared"] = "cleared"
+    cache_backend: str

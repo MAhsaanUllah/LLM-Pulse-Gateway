@@ -1,16 +1,29 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
+import json
 import time
 from typing import List, Optional
 
 from app.api.websocket import SignalEvent, SignalPacket, stream_manager
 from app.core.cache import cache_service
+from app.core.guard import authorize_request
 from app.core.providers import provider_manager
 from app.core.router import smart_router
 from app.core.usage import usage_ledger
 from app.features.evals import eval_engine
-from app.features.parser import GatewayRequest, ModelsResponse, StructuredPulseResponse, UsageSummaryResponse
+from app.features.parser import (
+    CacheClearResponse,
+    GatewayRequest,
+    MAX_HISTORY_TURNS,
+    ModelsResponse,
+    StructuredPulseResponse,
+    UsageSummaryResponse,
+)
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(authorize_request)])
+
+# Kept in sync with the block route below by tests/test_stream.py rather than a shared
+# trail object: two routes is cheaper to read than an abstraction that only two use.
 
 # Left to itself, the local model answers with a markdown essay (~750 tokens: headings,
 # bold runs, bullet nesting) that overruns the generated-token budget and reads badly in a
@@ -39,6 +52,12 @@ async def get_usage_summary() -> UsageSummaryResponse:
     return UsageSummaryResponse(**usage_ledger.totals(), by_route=usage_ledger.per_route())
 
 
+@router.post("/gateway/cache/clear", response_model=CacheClearResponse)
+async def clear_semantic_cache() -> CacheClearResponse:
+    """Drop every stored answer so the next prompt is genuinely re-asked."""
+    return CacheClearResponse(cache_backend=await cache_service.clear())
+
+
 @router.post("/gateway/chat", response_model=StructuredPulseResponse)
 async def process_gateway_request(req: GatewayRequest) -> StructuredPulseResponse:
     start_time = time.time()
@@ -65,8 +84,12 @@ async def process_gateway_request(req: GatewayRequest) -> StructuredPulseRespons
             key_source=key_source,
         )
 
-    # Step 1: Semantic cache check
-    cached_result = await cache_service.get(req.prompt)
+    # Step 1: Semantic cache check. Skipped mid-conversation: the cache matches on the
+    # words of the last prompt alone, and "and in one word?" means something different
+    # in every conversation.
+    history = req.history[-MAX_HISTORY_TURNS:]
+    in_conversation = bool(history)
+    cached_result = None if in_conversation else await cache_service.get(req.prompt)
     if cached_result:
         cache_metadata = cached_result.get("metadata") or {}
         await emit(
@@ -95,7 +118,8 @@ async def process_gateway_request(req: GatewayRequest) -> StructuredPulseRespons
             signals=[packet.model_dump() for packet in emitted],
         )
 
-    await emit(SignalEvent.CACHE_MISS, "warden_tower", "memory_vault", {"latency_ms": elapsed_ms()})
+    if not in_conversation:
+        await emit(SignalEvent.CACHE_MISS, "warden_tower", "memory_vault", {"latency_ms": elapsed_ms()})
 
     # Step 2: Smart route choice
     route_decision = smart_router.evaluate_route(req.prompt, user_tier=req.tier)
@@ -110,6 +134,7 @@ async def process_gateway_request(req: GatewayRequest) -> StructuredPulseRespons
             "estimated_cost": route_decision["estimated_cost"],
             "reason": route_decision["reason"],
             "complexity": route_decision["complexity_metrics"],
+            "turns": len(history) + 1,
         },
     )
 
@@ -120,6 +145,7 @@ async def process_gateway_request(req: GatewayRequest) -> StructuredPulseRespons
             model=target_model,
             messages=[
                 {"role": "system", "content": ANSWER_STYLE},
+                *(turn.model_dump() for turn in history),
                 {"role": "user", "content": req.prompt},
             ],
             byok=req.byok,
@@ -146,9 +172,10 @@ async def process_gateway_request(req: GatewayRequest) -> StructuredPulseRespons
     # Step 5: Populate cache and emit completion
     latency_ms = elapsed_ms()
     truncated = bool(completion.get("truncated"))
-    # A truncated answer is half a sentence, and a stand-in is the prompt echoed by
-    # code — caching either would replay it forever as if a model had answered.
-    if not truncated and completion["status"] != "simulated":
+    # A truncated answer is half a sentence, a stand-in is the prompt echoed by code, and
+    # an in-conversation answer only means something with its context — caching any of
+    # those would replay it to a stranger as if a model had answered on its own.
+    if not truncated and not in_conversation and completion["status"] != "simulated":
         await cache_service.set(
             req.prompt,
             completion["content"],
@@ -201,3 +228,171 @@ async def process_gateway_request(req: GatewayRequest) -> StructuredPulseRespons
         truncated=truncated,
         signals=[packet.model_dump() for packet in emitted],
     )
+
+
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
+
+
+@router.post("/gateway/chat/stream")
+async def process_gateway_stream(req: GatewayRequest) -> StreamingResponse:
+    """The same lifecycle as POST /gateway/chat, but the answer arrives as it is written.
+
+    A frame is `event: signal | delta | done` with a JSON data line, so the canvas can
+    keep animating and the ledger still sees exactly one request.
+    """
+    return StreamingResponse(_streamed_gateway(req), media_type="text/event-stream")
+
+
+async def _streamed_gateway(req: GatewayRequest):
+    start_time = time.time()
+
+    def elapsed_ms() -> float:
+        return round((time.time() - start_time) * 1000, 2)
+
+    async def signal(event: SignalEvent, source: str, destination: str, metadata: dict) -> str:
+        packet = SignalPacket(event=event, source=source, destination=destination, metadata=metadata)
+        await stream_manager.broadcast(packet)
+        return _sse("signal", {"event": packet.event.value, **packet.metadata})
+
+    history = req.history[-MAX_HISTORY_TURNS:]
+    in_conversation = bool(history)
+
+    # A cached answer needs no model, so it arrives as one piece and a done frame.
+    cached_result = None if in_conversation else await cache_service.get(req.prompt)
+    if cached_result:
+        cache_metadata = cached_result.get("metadata") or {}
+        model = cache_metadata.get("model", "semantic-cache")
+        yield await signal(
+            SignalEvent.CACHE_HIT,
+            "warden_tower",
+            "memory_vault",
+            {"latency_ms": elapsed_ms(), "cost": 0.0, "similarity": cached_result.get("similarity"), "model": model},
+        )
+        usage_ledger.record(
+            route="memory_vault", model=model, status="cached", cache_hit=True, tokens_used=0,
+            latency_ms=elapsed_ms(), estimated_cost_usd=0.0, key_source=None,
+        )
+        answer = cached_result["response"]
+        yield _sse("delta", {"text": answer})
+        yield _sse("done", {
+            "response": answer,
+            "destination": "memory_vault",
+            "model": model,
+            "provider_used": cache_metadata.get("provider", "memory_vault"),
+            "status": "cached",
+            "tokens_used": 0,
+            "latency_ms": elapsed_ms(),
+            "cost_usd": 0.0,
+            "key_source": None,
+            "truncated": False,
+        })
+        return
+
+    yield await signal(SignalEvent.CACHE_MISS, "warden_tower", "memory_vault", {"latency_ms": elapsed_ms()})
+
+    route_decision = smart_router.evaluate_route(req.prompt, user_tier=req.tier)
+    destination = route_decision["destination"]
+    target_model = route_decision["model"]
+    yield await signal(
+        SignalEvent.ROUTING_SIGNAL,
+        "warden_tower",
+        destination,
+        {
+            "model": target_model,
+            "estimated_cost": route_decision["estimated_cost"],
+            "reason": route_decision["reason"],
+            "complexity": route_decision["complexity_metrics"],
+            "turns": len(history) + 1,
+        },
+    )
+
+    yield await signal(SignalEvent.MODEL_EXECUTION, destination, destination, {"model": target_model})
+    messages = [
+        {"role": "system", "content": ANSWER_STYLE},
+        *(turn.model_dump() for turn in history),
+        {"role": "user", "content": req.prompt},
+    ]
+
+    pieces: List[str] = []
+    final: dict = {}
+    try:
+        async for piece in provider_manager.stream_completion(target_model, messages, byok=req.byok):
+            if piece["kind"] == "delta":
+                pieces.append(piece["text"])
+                yield _sse("delta", {"text": piece["text"]})
+            else:
+                final = piece
+    except Exception as exc:
+        yield await signal(SignalEvent.ERROR, destination, "warden_tower", {"model": target_model, "error": str(exc)})
+        usage_ledger.record(
+            route=destination, model=target_model, status="error", cache_hit=False, tokens_used=0,
+            latency_ms=elapsed_ms(), estimated_cost_usd=0.0, key_source=None,
+        )
+        yield _sse("error", {"detail": str(exc)})
+        return
+
+    latency_ms = elapsed_ms()
+    content = final.get("content", "".join(pieces))
+    truncated = bool(final.get("truncated"))
+    status = final.get("status", "success")
+    eval_result = await eval_engine.evaluate(content, status)
+    yield await signal(
+        SignalEvent.EVALUATION,
+        destination,
+        "warden_tower",
+        {"passed": eval_result["passed"], "checks": eval_result["checks"], "status": status},
+    )
+
+    # Same three refusal rules as the block route: half an answer, an echo, or an
+    # answer that only means something with its conversation attached.
+    if not truncated and not in_conversation and status != "simulated":
+        await cache_service.set(
+            req.prompt,
+            content,
+            {
+                "model": final.get("model_used"),
+                "provider": final.get("provider"),
+                "status": status,
+                "tokens": final.get("tokens_used", 0),
+            },
+        )
+
+    key_source = (final.get("metadata") or {}).get("key_source")
+    estimated_cost = 0.0 if status == "simulated" else route_decision["estimated_cost"]
+    usage_ledger.record(
+        route=destination,
+        model=final.get("model_used", target_model),
+        status=status,
+        cache_hit=False,
+        tokens_used=final.get("tokens_used", 0),
+        latency_ms=latency_ms,
+        estimated_cost_usd=estimated_cost,
+        key_source=key_source,
+    )
+
+    yield await signal(
+        SignalEvent.COMPLETION,
+        destination,
+        "warden_tower",
+        {
+            "latency_ms": latency_ms,
+            "model": final.get("model_used", target_model),
+            "passed": eval_result["passed"],
+            "tokens": final.get("tokens_used", 0),
+            "status": status,
+            "truncated": truncated,
+        },
+    )
+    yield _sse("done", {
+        "response": content,
+        "destination": destination,
+        "model": final.get("model_used", target_model),
+        "provider_used": final.get("provider", ""),
+        "status": status,
+        "tokens_used": final.get("tokens_used", 0),
+        "latency_ms": latency_ms,
+        "cost_usd": estimated_cost,
+        "key_source": key_source,
+        "truncated": truncated,
+    })

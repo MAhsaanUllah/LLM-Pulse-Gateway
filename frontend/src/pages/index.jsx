@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Head from 'next/head';
 import PulseWorld from '../components/pulse/PulseWorld';
-import { postChat, fetchUsage, fetchModels, formatLatency, formatCost, SIGNALS_WS_URL } from '../lib/pulse/gateway';
+import { streamChat, fetchUsage, fetchModels, formatLatency, formatCost, signalsWsUrl, getGatewayToken, saveGatewayToken } from '../lib/pulse/gateway';
 import { Zap, Sparkles, Send, Loader2, Key, Trash2, RefreshCw, Settings, X, Activity } from 'lucide-react';
 
 const BYOK_STORAGE_KEY = 'llm-pulse-byok';
@@ -228,6 +228,8 @@ export default function Home() {
   const [notice, setNotice] = useState(null);
   const [byok, setByok] = useState(EMPTY_BYOK);
   const [byokSaved, setByokSaved] = useState(false);
+  const [gatewayToken, setGatewayToken] = useState(() => getGatewayToken());
+  const [tokenDraft, setTokenDraft] = useState(() => getGatewayToken());
   const [showSettings, setShowSettings] = useState(false);
   const [localModels, setLocalModels] = useState(null);
   const [detecting, setDetecting] = useState(false);
@@ -291,16 +293,28 @@ export default function Home() {
     setByokSaved(false);
   };
 
-  const pushMessage = (msg) => {
-    msgIdRef.current += 1;
-    setMessages((prev) => [...prev, { id: msgIdRef.current, ...msg }]);
+  // The token gates every call, so saving it reconnects the socket and re-reads the ledger.
+  const saveToken = () => {
+    const trimmed = tokenDraft.trim();
+    saveGatewayToken(trimmed);
+    setGatewayToken(trimmed);
+    refreshUsage();
   };
 
-  // Live signal stream → drives the world animation.
+  // The id is taken here, not inside the updater: dev mode runs the updater twice, and
+  // two pushes in one batch would otherwise read the same counter and collide on a key.
+  const pushMessage = (msg) => {
+    msgIdRef.current += 1;
+    const id = msgIdRef.current;
+    setMessages((prev) => [...prev, { id, ...msg }]);
+    return id;
+  };
+
+  // Live signal stream → drives the world animation. Reopens when the token changes.
   useEffect(() => {
     let ws;
     try {
-      ws = new WebSocket(SIGNALS_WS_URL);
+      ws = new WebSocket(signalsWsUrl());
       ws.onopen = () => setConnected(true);
       ws.onclose = () => setConnected(false);
       ws.onerror = () => setConnected(false);
@@ -318,7 +332,8 @@ export default function Home() {
     return () => {
       if (ws) ws.close();
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gatewayToken]);
 
   // Keep the newest chat message in view.
   useEffect(() => {
@@ -330,6 +345,12 @@ export default function Home() {
     if (!text || isPending) return;
 
     setPrompt('');
+    // Everything the visitor can still see above this line is the conversation the
+    // model needs to understand a follow-up. The greeting and our own failures are
+    // not answers, so they stay out.
+    const history = messages
+      .filter((m) => m.id !== 0 && m.tone !== 'error' && (m.text || '').trim())
+      .map((m) => ({ role: m.role, content: m.text }));
     pushMessage({ role: 'user', text });
     setIsPending(true);
     setNotice(null);
@@ -337,18 +358,37 @@ export default function Home() {
     setMetrics({ model: 'routing…', latency: '…', cost: '$0.0000', tokens: '…' });
     engineRef.current?.beginFlow();
 
+    let final = null;
+    let failure = null;
     try {
-      const data = await postChat(text, tier, byok);
+      const replyId = pushMessage({ role: 'assistant', text: '' });
+      let streamed = '';
+      await streamChat(text, tier, byok, history, (name, data) => {
+        if (name === 'delta') {
+          streamed += data.text;
+          setBanner({ text: 'Answering…', tone: 'pending' });
+          setMessages((prev) => prev.map((m) => (m.id === replyId ? { ...m, text: streamed } : m)));
+        } else if (name === 'done') {
+          final = data;
+        } else if (name === 'error') {
+          failure = data.detail || 'the gateway stopped mid-stream';
+        }
+      });
+
+      if (failure) throw new Error(failure);
+      if (!final) throw new Error('the stream ended without an answer');
+
+      const data = final;
       engineRef.current?.onResponse(data);
       refreshUsage();
-      pushMessage({
-        role: 'assistant',
-        text: data.response || '(empty response)',
+      setMessages((prev) => prev.map((m) => (m.id === replyId ? {
+        ...m,
+        text: data.response || streamed || '(empty response)',
         status: data.status,
         provider: data.provider_used,
         keySource: data.key_source,
         truncated: data.truncated,
-      });
+      } : m)));
       setMetrics({
         model: data.model || '—',
         latency: formatLatency(data.latency_ms),
@@ -369,12 +409,17 @@ export default function Home() {
       }
     } catch (err) {
       engineRef.current?.handleSignal({ event: 'ERROR', metadata: { error: String(err) } });
+      // fetch rejects with TypeError when nothing answered; any other error is the
+      // gateway itself refusing, which is a different fix and must not say "is it down".
+      const unreachable = err instanceof TypeError;
       pushMessage({
         role: 'assistant',
-        text: `Couldn't reach the gateway (${err.message}). Is the backend running on port 8000?`,
+        text: unreachable
+          ? "Couldn't reach the gateway on port 8000. Start it with `python -m uvicorn backend.main:app --port 8000`."
+          : err.message,
         tone: 'error',
       });
-      setBanner({ text: "Couldn't reach the gateway", tone: 'error' });
+      setBanner({ text: unreachable ? "Couldn't reach the gateway" : 'The gateway refused this request', tone: 'error' });
       setMetrics({ model: '—', latency: '—', cost: '$0.0000', tokens: '—' });
     } finally {
       setIsPending(false);
@@ -706,6 +751,31 @@ export default function Home() {
                 >
                   <X className="w-4 h-4" />
                 </button>
+              </div>
+
+              <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+                <span className="text-[11px] font-semibold text-slate-600">Gateway access token</span>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Only if the operator set GATEWAY_TOKEN. Blank works against a local gateway.
+                </p>
+                <div className="mt-2 flex gap-2">
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={tokenDraft}
+                    onChange={(e) => setTokenDraft(e.target.value)}
+                    placeholder="Not set"
+                    className="flex-1 min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-mono text-slate-800 placeholder-slate-400 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition"
+                  />
+                  <button
+                    type="button"
+                    onClick={saveToken}
+                    className="shrink-0 text-[11px] font-semibold px-3 py-2 rounded-lg border border-blue-200 bg-blue-50 text-blue-700 hover:border-blue-300 hover:bg-blue-100 transition"
+                  >
+                    Use token
+                  </button>
+                </div>
               </div>
 
               <p className="text-xs text-slate-500">

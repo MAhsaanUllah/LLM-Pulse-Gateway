@@ -64,8 +64,10 @@ aspirational — see [Measured behaviour](#measured-behaviour).
           └────────────────────┘
 ```
 
-Storage: **Qdrant** for the vector index when reachable; otherwise an in-process
-in-memory index with a logged warning — **that cache is lost on restart**.
+Storage: **Qdrant** for the vector index when reachable; otherwise the same cosine
+index runs in-process and writes itself to `CACHE_FILE_PATH`
+(`data/semantic_cache.json`) on every save, so cached answers survive a restart
+without Docker.
 
 ---
 
@@ -81,7 +83,61 @@ in-memory index with a logged warning — **that cache is lost on restart**.
 5. `COMPLETION` — latency, model, tokens, status, `truncated`
 
 Every step is also returned inline in the response `signals` array, so a client can
-replay a request's path without subscribing to the socket.
+replay a request's path without subscribing to the socket. `POST /api/gateway/chat/stream`
+runs the same lifecycle and delivers it as Server-Sent Events instead of one block.
+
+---
+
+## Gates: access token and rate limit
+
+Both are open by default, because a local demo should not need a token to start. Set
+them in `.env` before the port means anything.
+
+| Setting | Effect |
+|---|---|
+| `GATEWAY_TOKEN` | every route then demands `Authorization: Bearer <token>`; `/ws/signals` carries it as `?token=<token>` because a browser socket cannot set a header |
+| `RATE_LIMIT_PER_MINUTE` | per-client sliding window; over it returns `429` with a `retry-after` header. `0` disables |
+
+Order matters and is deliberate: an unauthenticated request is refused with `401`
+before the limiter counts it, so guessing a token cannot consume a caller's window.
+The UI says which refusal happened ("The gateway needs its access token…" vs "Too many
+requests…") and keeps the token in `localStorage` next to the BYOK keys.
+
+Bind to `127.0.0.1` until you have set a token. Without one, anyone who can reach the
+port spends the keys in your `.env`.
+
+---
+
+## Conversation memory
+
+`GatewayRequest.history` carries prior turns (`{role: "user" \| "assistant", content}`),
+so a follow-up like "and in one word?" is answerable. The last `MAX_HISTORY_TURNS` (12)
+turns are forwarded between the system instruction and the new prompt.
+
+While a conversation is in progress the semantic cache is **bypassed in both
+directions** — it stores answers to standalone prompts, and replaying one for a
+context-dependent follow-up would be wrong. A turn in progress is therefore never
+written to it either.
+
+---
+
+## Streaming
+
+`POST /api/gateway/chat/stream` answers with `text/event-stream` frames:
+
+```
+event: signal   # CACHE_MISS / ROUTING_SIGNAL / MODEL_EXECUTION / EVALUATION / COMPLETION
+event: delta    # {"text": "..."} per piece, as the model writes it
+event: done     # the whole StructuredPulseResponse, same fields as the block route
+event: error    # {"detail": "..."} if the gateway stops mid-answer
+```
+
+The local tier streams from Ollama's native `stream: true`, so the first piece arrives
+while the rest is still being generated. A cached answer is one `delta` plus `done`.
+Cloud tiers are currently delivered as one piece — see [Known limits](#known-limits).
+
+The ledger and the cache see the *finished* answer: one row per request, one entry per
+complete reply, and a stream cut off by the token budget is flagged and never cached.
 
 ---
 
@@ -208,6 +264,26 @@ is not cached either: it is generated from the prompt by code, not answered by a
 
 ---
 
+## Cache lifetime and clearing
+
+Each entry stores the `stored_at` it was written at. `CACHE_TTL_SECONDS` (default 86400)
+turns a lookup on an older entry into a miss, so the model is re-asked rather than the
+answer being replayed forever; `0` means entries never expire. A stale entry is still
+keyed by its prompt, so the next answer to that prompt overwrites it.
+
+To wipe the cache without deleting files by hand:
+
+```bash
+curl -X POST http://localhost:8000/api/gateway/cache/clear
+# { "status": "cleared", "cache_backend": "qdrant:semantic_cache" }
+# or, on the fallback index: { "status": "cleared", "cache_backend": "in-memory(7 entries)" }
+```
+
+It answers with which backend was cleared, and is behind the same token gate as the
+rest of the API.
+
+---
+
 ## Setup
 
 Requirements: Python 3.11+, Node 18+, and optionally Docker and Ollama.
@@ -216,7 +292,8 @@ Requirements: Python 3.11+, Node 18+, and optionally Docker and Ollama.
 pip install -r requirements.txt
 cp .env.example .env                      # fill in nothing to stay local
 
-# Optional infrastructure (vector persistence; cache works without it)
+# Optional infrastructure (vector persistence; cache works without it).
+# Needs the Docker engine running, not just the CLI installed.
 docker-compose up -d qdrant
 
 # Local model
@@ -237,6 +314,10 @@ Cloud tiers are opt-in per key: set `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`,
 exposes which providers the host can already reach — as booleans, never key material
 (`GET /api/gateway/models`).
 
+`GATEWAY_TOKEN` and `RATE_LIMIT_PER_MINUTE` are both unset in a fresh `.env`, which
+leaves the gateway open on `127.0.0.1`; see [Gates](#gates-access-token-and-rate-limit)
+before exposing it further.
+
 ## Tests
 
 ```bash
@@ -244,17 +325,19 @@ python -m pytest
 ```
 
 The suite is hermetic by construction (`tests/conftest.py`): every cloud credential
-variable is unset, the LiteLLM tier is forced unavailable, and the ledger is pointed
-at a temporary file, so no test can spend money or annotate the operator's real
-records. 45 tests, no network calls.
+variable is unset, the LiteLLM tier is forced unavailable, the ledger and the fallback
+cache file are pointed at a temporary directory, and the gates are opened so no test
+needs a token. 77 tests, no network calls.
 
 ## Endpoints
 
 | Method | Path | Purpose |
 |---|---|---|
 | `POST` | `/api/gateway/chat` | route, answer, cache, and return provenance |
+| `POST` | `/api/gateway/chat/stream` | the same lifecycle as SSE (`signal` / `delta` / `done` / `error`) |
 | `GET` | `/api/gateway/usage` | ledger aggregates |
 | `GET` | `/api/gateway/models` | local models pulled + per-provider host key status |
+| `POST` | `/api/gateway/cache/clear` | drop every cached answer |
 | `WS` | `/ws/signals` | live routing events for the canvas |
 | `GET` | `/health` | liveness |
 
@@ -279,22 +362,80 @@ The capped request additionally pays routing and embedding overhead inside that
 cost 55.9 s and a short one-shot answer cost 14.7 s — model load dominates the first
 call, which is why `keep_alive` is raised to 30m.
 
+Streaming, same machine, model already warm (`gemma4:e2b`):
+
+| Prompt | Pieces | First piece | Whole answer | Tokens |
+|---|---|---|---|---|
+| "What is a knowledge graph?" | 163 | 3.7 s | 6.4 s | 232 |
+| "What is prompt injection?" | 132 | 7.4 s | 9.5 s | 200 |
+
+The reader sees the answer while it is still being generated, which is the whole point:
+the block route made them wait the full 6–10 s for one blob. A cold process is the
+opposite story — the first token waited 41.8 s because loading the model into VRAM
+comes before it, and `keep_alive=30m` is what keeps that out of the way.
+
+Cache lifetime, measured with `CACHE_TTL_SECONDS=4`:
+
+| Step | Result |
+|---|---|
+| first ask | `success`, 218 tokens, 12.5 s |
+| same prompt immediately | `cached`, 0 tokens, 2.2 s |
+| same prompt 5 s later | `success` again — the entry expired and the model was re-asked |
+| after `POST /api/gateway/cache/clear` | `success`, 232 tokens |
+
+Restart durability: three prompts in `data/semantic_cache.json`, process killed, started
+again, first repeat answered `cached` with 0 tokens (6.4 s, because the embedder model
+itself had to reload).
+
+With Qdrant actually running (`docker compose up -d qdrant`), the same promise is held by
+the server instead of the file: a prompt was stored as one 768-dim point, then the
+container was restarted, then the whole Docker engine was stopped and brought back, and
+the point was still there both times. A backend restart on top of that answered the same
+prompt `cached` with 0 tokens in 2.4 s, and `POST /api/gateway/cache/clear` reported
+`qdrant:semantic_cache` and left the collection gone until the next stored answer.
+Whichever backend is live is the one the response tells you about.
+
+Gates, measured on a second process with `GATEWAY_TOKEN` and `RATE_LIMIT_PER_MINUTE=3`:
+no header `401`, wrong scheme `401`, exact bearer `200`, fourth call in the minute
+`429` with `retry-after: 59.0`.
+
+Follow-up with `history`, local tier: "And in one word?" over a previous answer about
+embedding models returned `Representation` in 1.58 s — the earlier turns reached the
+model, and the exchange was not served from, or written to, the cache.
+
 ## Known limits
 
 Stated rather than hidden:
 
-- **No authentication on the gateway itself** and no rate limiting. Anyone who can
-  reach `:8000` can route through it and spend whatever key the host has configured.
-  Bind to `127.0.0.1` (as above) until that is fixed.
+- **One shared token, not accounts.** `GATEWAY_TOKEN` is a single bearer secret: it says
+  "this caller is allowed", not who they are. There are no users, sessions, or per-key
+  quotas, and the rate-limit window is per client address in process memory, so it
+  resets on restart and every caller looks like one client behind a proxy.
+- **Streaming is the local tier.** Cloud tiers answer as one `delta` — their APIs need
+  per-provider `astream` calls, which is worth doing when a cloud route becomes the
+  usual one, not while local answers the simple prompts.
+- **Conversation memory is per request.** The server stores no session: the client sends
+  `history` with each call and the last 12 turns are forwarded. Close the tab and the
+  conversation is gone.
+- **Expiry is a read rule.** An entry past `CACHE_TTL_SECONDS` is treated as a miss and
+  overwritten by the next answer; nothing is deleted from Qdrant on a timer.
+- **The fallback cache file is rewritten whole on every save.** Fine for a few thousand
+  entries, wrong for more — run Qdrant when it matters.
+- **The two backends do not merge.** The index is chosen once per process, from whether
+  Qdrant answers on `QDRANT_HOST:QDRANT_PORT` at the first cache use. Answers stored in
+  the file while Docker was off stay invisible to Qdrant, and vice versa, so a stopped
+  Docker Desktop reads as a wave of cache misses rather than an error. Restart the
+  backend after starting Qdrant; the running process keeps whichever index it picked.
 - **Local answers are short by design**: 4096 tokens of context total (prompt included)
   and at most 256 generated, which is about 110 words of prose. Paste a large file and
-  ask about it and it will not fit — that route needs a cloud key.
-- **Single-turn.** A request carries one `prompt`; there is no conversation memory.
-- **No streaming.** The answer arrives as one block after inference finishes.
+  ask about it and it will not fit — that route needs a cloud key. A multi-turn
+  conversation pays for its own history inside that same window.
 - **Cost is an estimate** (router-side), tokens are real (provider-reported).
-- **In-memory cache does not survive restarts** unless Qdrant is running.
-- `estimated_cost_usd` for local and simulated routes is `0.0` because nothing was
+  `estimated_cost_usd` for local and simulated routes is `0.0` because nothing was
   billed, not because a price was computed.
+- The UI's **"Your key" chip only appears when the caller's own key answered**, which
+  needs a key pasted under API keys & settings. Without one, an answer is honest about
+  being routed locally or on the host key.
 
 ## Layout
 
@@ -303,19 +444,20 @@ backend/
   config.py                  pydantic-settings; all knobs come from .env
   main.py                    app, CORS, routers, /health
   app/
-    api/gateway.py           the 5-step request pipeline + endpoints
+    api/gateway.py           the 5-step request pipeline, block + streaming routes
     api/websocket.py         SignalPacket broadcast (/ws/signals)
+    core/guard.py            bearer token + per-client rate window
     core/router.py           SmartRouter heuristics + cost estimate
     core/providers.py        cascade, BYOK resolution, redaction, provenance
-    core/cache.py            semantic cache: Qdrant with in-memory fallback
+    core/cache.py            semantic cache: Qdrant, or a file-backed local index
     core/credentials.py      BYOKCredentials
     core/usage.py            SQLite ledger
     features/parser.py       request/response models
     features/evals.py        observable answer checks
 frontend/
-  src/pages/index.jsx        chat, metrics, BYOK panel, usage ledger
+  src/pages/index.jsx        chat (streaming), metrics, BYOK + access-token panel, ledger
   src/components/pulse/      Canvas 2D pixel world driven by WS signals
-  src/lib/pulse/gateway.js   endpoint + formatting single source
+  src/lib/pulse/gateway.js   endpoints, SSE parsing, and formatting single source
 tests/                       hermetic suite (see conftest.py)
 scripts/blender/             sprite/asset generators for the canvas
 ```

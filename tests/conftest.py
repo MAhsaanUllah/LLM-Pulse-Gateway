@@ -28,6 +28,22 @@ def no_live_cloud_credentials(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def gates_open_for_the_suite(monkeypatch):
+    """The suite talks to the endpoints as an unthrottled local caller: a token in
+    the operator's .env must not turn every other test into a 401, and TestClients
+    all share one client host, so a real window would 429 the suite at random."""
+    monkeypatch.setattr(settings, "GATEWAY_TOKEN", None, raising=False)
+    monkeypatch.setattr(settings, "RATE_LIMIT_PER_MINUTE", 0, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def cache_file_stays_in_tmp(tmp_path, monkeypatch):
+    """The durable index writes real JSON. Left alone, a test run would edit the
+    operator's own cache file and each test would inherit the last one's answers."""
+    monkeypatch.setattr(settings, "CACHE_FILE_PATH", str(tmp_path / "semantic_cache.json"), raising=False)
+
+
+@pytest.fixture(autouse=True)
 def usage_ledger_writes_to_a_temp_file(tmp_path, monkeypatch):
     """The default ledger is the operator's real file; tests must not annotate it."""
     ledger = UsageLedger(db_path=str(tmp_path / "test-usage.sqlite"))
