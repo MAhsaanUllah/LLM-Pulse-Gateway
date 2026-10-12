@@ -12,6 +12,15 @@ from app.features.parser import GatewayRequest, ModelsResponse, StructuredPulseR
 
 router = APIRouter()
 
+# Left to itself, the local model answers with a markdown essay (~750 tokens: headings,
+# bold runs, bullet nesting) that overruns the generated-token budget and reads badly in a
+# chat bubble. The answer's shape has to be asked for, not hoped for.
+ANSWER_STYLE = (
+    "Answer in plain prose. No markdown: no headings, no bold, no bullet or numbered "
+    "lists, no asterisks, no em dashes. Write two or three short paragraphs, at most "
+    "120 words, and finish your answer."
+)
+
 
 @router.get("/gateway/models", response_model=ModelsResponse)
 async def get_model_catalog() -> ModelsResponse:
@@ -109,7 +118,10 @@ async def process_gateway_request(req: GatewayRequest) -> StructuredPulseRespons
         await emit(SignalEvent.MODEL_EXECUTION, destination, destination, {"model": target_model})
         completion = await provider_manager.execute_completion(
             model=target_model,
-            messages=[{"role": "user", "content": req.prompt}],
+            messages=[
+                {"role": "system", "content": ANSWER_STYLE},
+                {"role": "user", "content": req.prompt},
+            ],
             byok=req.byok,
         )
     except Exception as exc:

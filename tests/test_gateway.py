@@ -115,6 +115,31 @@ def test_a_stand_in_answer_is_never_stored_in_the_cache():
     print("[PASS] test_a_stand_in_answer_is_never_stored_in_the_cache")
 
 
+def test_gateway_asks_for_plain_bounded_prose():
+    """The local model answers in a markdown essay of ~750 tokens, which is both unreadable
+    in a chat bubble and over the generated-token budget, so the request must carry the
+    shape of the answer it wants."""
+    recorded = []
+
+    class RecordingProvider(StubProvider):
+        async def execute_completion(self, model, messages, **kwargs):
+            recorded.append(messages)
+            return self.completion
+
+    gateway_module.cache_service = StubCache()
+    gateway_module.provider_manager = RecordingProvider()
+    TestClient(main.app).post(
+        "/api/gateway/chat", json={"prompt": "how to understand any new language"}
+    )
+
+    system = recorded[0][0]
+    assert system["role"] == "system"
+    assert "markdown" in system["content"].lower()
+    assert recorded[0][-1] == {"role": "user", "content": "how to understand any new language"}
+
+    print("[PASS] test_gateway_asks_for_plain_bounded_prose")
+
+
 def test_gateway_cache_miss_flow():
     client = _client()
     resp = client.post("/api/gateway/chat", json={"prompt": "Hello there"})
@@ -236,6 +261,7 @@ if __name__ == "__main__":
     test_gateway_reports_when_the_answer_was_cut_short_by_the_token_budget()
     test_a_cut_off_answer_is_never_stored_in_the_cache()
     test_a_stand_in_answer_is_never_stored_in_the_cache()
+    test_gateway_asks_for_plain_bounded_prose()
     test_gateway_reports_provenance_of_a_simulated_answer()
     test_gateway_cache_hit_flow()
     test_gateway_returns_its_own_signal_trail()

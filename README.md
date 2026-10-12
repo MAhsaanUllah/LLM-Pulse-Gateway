@@ -175,18 +175,25 @@ No prompt text and no key material is ever written. Delete the file to reset.
 
 ---
 
-## Token budget and truncation
+## Answer shape, token budget and truncation
 
 Ollama allocates a KV cache sized by `num_ctx` and generates until the model stops,
-which is how a "quick" local answer turns into a 1500-token essay. Defaults:
+which is how a "quick" local answer turns into a 1500-token markdown essay. The gateway
+asks for the shape it wants with one system instruction (`ANSWER_STYLE` in
+`backend/app/api/gateway.py`): plain prose, no markdown or em dashes, roughly 120 words.
+Budgets:
 
 | Setting | Value | Why |
 |---|---|---|
-| `OLLAMA_NUM_CTX` | 4096 | Ollama otherwise reserves the model's full 131k window |
-| `OLLAMA_NUM_PREDICT` | 256 | bounds generated tokens per answer |
+| `OLLAMA_NUM_CTX` | 4096 | prompt + answer window; Ollama otherwise reserves the model's full 131k |
+| `OLLAMA_NUM_PREDICT` | 256 | bounds generated tokens per answer (~110 words of prose) |
 | `think` | `false` (payload) | reasoning models otherwise burn the whole budget on hidden chain-of-thought |
 | `OLLAMA_KEEP_ALIVE` | `30m` | a cold reload costs 12–50 s |
 | `INFERENCE_TIMEOUT_SECONDS` | 90 | must exceed cold-load + first token |
+
+So a local answer is bounded by 4096 tokens of context with at most 256 generated: a
+long pasted file plus a long essay will not fit, and the style instruction exists to
+keep the answer inside the 256 instead of cutting it off.
 
 When a reply hits the budget, Ollama reports `done_reason: "length"`, the response
 carries **`truncated: true`**, and the answer is **not written to the cache** — a
@@ -255,6 +262,11 @@ with examples."`), model `gemma4:e2b`, warm process:
 | Ollama direct, uncapped | 1513 (`done_reason: stop`) | 28.0 s |
 | Through the gateway, capped at 256 | 281 total incl. prompt, `truncated: true` | 12.4 s |
 | Second identical prompt, cache hit | 0 | 2.1 s |
+| Capped **and** style-instructed (current) | 189 total incl. prompt, `truncated: false` | 12.5 s |
+
+The last row is today's behaviour, measured on `"how to understand any new language"`:
+108 words of plain prose that finishes inside the budget, so the cap no longer cuts the
+answer off — the instruction makes the answer small enough to fit.
 
 The capped request additionally pays routing and embedding overhead inside that
 12.4 s, so the comparison is conservative. A cold first request in a fresh process
@@ -268,6 +280,9 @@ Stated rather than hidden:
 - **No authentication on the gateway itself** and no rate limiting. Anyone who can
   reach `:8000` can route through it and spend whatever key the host has configured.
   Bind to `127.0.0.1` (as above) until that is fixed.
+- **Local answers are short by design**: 4096 tokens of context total (prompt included)
+  and at most 256 generated, which is about 110 words of prose. Paste a large file and
+  ask about it and it will not fit — that route needs a cloud key.
 - **Single-turn.** A request carries one `prompt`; there is no conversation memory.
 - **No streaming.** The answer arrives as one block after inference finishes.
 - **Cost is an estimate** (router-side), tokens are real (provider-reported).
