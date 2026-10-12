@@ -8,9 +8,21 @@ from app.core.providers import provider_manager
 from app.core.router import smart_router
 from app.core.usage import usage_ledger
 from app.features.evals import eval_engine
-from app.features.parser import GatewayRequest, StructuredPulseResponse, UsageSummaryResponse
+from app.features.parser import GatewayRequest, ModelsResponse, StructuredPulseResponse, UsageSummaryResponse
 
 router = APIRouter()
+
+
+@router.get("/gateway/models", response_model=ModelsResponse)
+async def get_model_catalog() -> ModelsResponse:
+    """Local models the Ollama daemon has pulled, plus host key status per provider."""
+    local = await provider_manager.list_local_models()
+    return ModelsResponse(
+        ollama_available=local["available"],
+        base_url=local["base_url"],
+        models=local["models"],
+        providers=provider_manager.host_provider_status(),
+    )
 
 
 @router.get("/gateway/usage", response_model=UsageSummaryResponse)
@@ -120,16 +132,18 @@ async def process_gateway_request(req: GatewayRequest) -> StructuredPulseRespons
 
     # Step 5: Populate cache and emit completion
     latency_ms = elapsed_ms()
-    await cache_service.set(
-        req.prompt,
-        completion["content"],
-        {
-            "model": completion["model_used"],
-            "provider": completion["provider"],
-            "status": completion["status"],
-            "tokens": completion["tokens_used"],
-        },
-    )
+    truncated = bool(completion.get("truncated"))
+    if not truncated:
+        await cache_service.set(
+            req.prompt,
+            completion["content"],
+            {
+                "model": completion["model_used"],
+                "provider": completion["provider"],
+                "status": completion["status"],
+                "tokens": completion["tokens_used"],
+            },
+        )
     await emit(
         SignalEvent.COMPLETION,
         destination,
@@ -140,6 +154,7 @@ async def process_gateway_request(req: GatewayRequest) -> StructuredPulseRespons
             "passed": eval_result["passed"],
             "tokens": completion["tokens_used"],
             "status": completion["status"],
+            "truncated": truncated,
         },
     )
 
@@ -166,5 +181,6 @@ async def process_gateway_request(req: GatewayRequest) -> StructuredPulseRespons
         status=completion["status"],
         provider_used=completion["provider"],
         tokens_used=completion["tokens_used"],
+        truncated=truncated,
         signals=[packet.model_dump() for packet in emitted],
     )

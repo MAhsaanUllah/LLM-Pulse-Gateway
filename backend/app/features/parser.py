@@ -23,6 +23,9 @@ class StructuredPulseResponse(BaseModel):
     status: str = "success"
     provider_used: str = ""
     tokens_used: int = 0
+    truncated: bool = Field(
+        default=False, description="True when the answer hit the generated-token budget and was cut off"
+    )
     signals: List[Dict[str, Any]] = []
 
 
@@ -41,3 +44,25 @@ class UsageSummaryResponse(BaseModel):
     avg_latency_ms: float
     estimated_cost_usd: float
     by_route: Dict[str, RouteUsage]
+
+
+class LocalModel(BaseModel):
+    name: str
+    size: Optional[int] = None
+
+
+class ProviderStatus(BaseModel):
+    """Whether the operator's own environment already has a key for a provider."""
+
+    provider: str
+    env_var: str
+    host_key_configured: bool
+
+
+class ModelsResponse(BaseModel):
+    """Local model detection plus which cloud providers the host can already reach."""
+
+    ollama_available: bool
+    base_url: str
+    models: List[LocalModel] = []
+    providers: List[ProviderStatus] = []

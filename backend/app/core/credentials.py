@@ -11,5 +11,10 @@ class BYOKCredentials(BaseModel):
     mean "fall back to the operator's own key".
     """
 
-    gemini_api_key: Optional[str] = Field(default=None, description="Visitor's own Gemini key")
+    gemini_api_key: Optional[str] = Field(default=None, description="Visitor's own Google Gemini key")
+    openai_api_key: Optional[str] = Field(default=None, description="Visitor's own OpenAI key")
+    anthropic_api_key: Optional[str] = Field(default=None, description="Visitor's own Anthropic (Claude) key")
+    xai_api_key: Optional[str] = Field(default=None, description="Visitor's own xAI (Grok) key")
     deepseek_api_key: Optional[str] = Field(default=None, description="Visitor's own DeepSeek key")
+    groq_api_key: Optional[str] = Field(default=None, description="Visitor's own Groq key")
+    openrouter_api_key: Optional[str] = Field(default=None, description="Visitor's own OpenRouter key")

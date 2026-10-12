@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     # Ollama unloads a model 5 minutes after the last request; a cold reload costs
     # ~12-50 s on CPU, which is longer than the inference budget below.
     OLLAMA_KEEP_ALIVE: str = "30m"
+    # Uncapped, local models answer with ~750-token essays and dominate wall-clock
+    # latency; this bounds generated tokens so a route stays inside the budget.
+    OLLAMA_NUM_PREDICT: int = 256
 
     # Inference budget. A cold local model can spend ~20s just loading weights, so
     # this has to stay well above the first-token latency of the largest local model.
@@ -41,7 +44,17 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: Optional[str] = None
     GEMINI_API_KEY: Optional[str] = None
     GOOGLE_API_KEY: Optional[str] = None
+    GROQ_API_KEY: Optional[str] = None
+    XAI_API_KEY: Optional[str] = None
+    OPENROUTER_API_KEY: Optional[str] = None
+
+    # Default model per cloud provider (used by the LiteLLM fallback chain)
     DEFAULT_GEMINI_MODEL: str = "gemini-3.8-flash"
+    DEFAULT_OPENAI_MODEL: str = "gpt-4o-mini"
+    DEFAULT_ANTHROPIC_MODEL: str = "claude-3-5-sonnet-20241022"
+    DEFAULT_GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    DEFAULT_XAI_MODEL: str = "grok-2-latest"
+    DEFAULT_OPENROUTER_MODEL: str = "openai/gpt-4o-mini"
 
     # DeepSeek is OpenAI-compatible but called directly, so it needs no LiteLLM
     # and cannot be hijacked by an unrelated OPENAI_API_KEY in the environment.

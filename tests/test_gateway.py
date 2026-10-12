@@ -52,6 +52,47 @@ def _client(cache_hit=None, completion=None):
     return TestClient(main.app)
 
 
+def test_gateway_reports_when_the_answer_was_cut_short_by_the_token_budget():
+    """A capped answer must never look like a finished one — the caller needs the
+    difference between 'the model answered' and 'the model ran out of budget'."""
+    client = _client(completion={
+        "content": "Semantic caching means",
+        "model_used": "ollama/gemma4:e2b",
+        "provider": "local_slm",
+        "status": "success",
+        "tokens_used": 276,
+        "truncated": True,
+        "metadata": {"attempted": []},
+    })
+    body = client.post("/api/gateway/chat", json={"prompt": "Explain semantic caching"}).json()
+
+    assert body["truncated"] is True
+
+    print("[PASS] test_gateway_reports_when_the_answer_was_cut_short_by_the_token_budget")
+
+
+def test_a_cut_off_answer_is_never_stored_in_the_cache():
+    """The semantic cache replays stored answers for near-identical prompts, so caching
+    a truncated reply would serve the same cut-off text forever without re-asking."""
+    cache = StubCache()
+    gateway_module.cache_service = cache
+    gateway_module.provider_manager = StubProvider(completion={
+        "content": "Semantic caching means",
+        "model_used": "ollama/gemma4:e2b",
+        "provider": "local_slm",
+        "status": "success",
+        "tokens_used": 276,
+        "truncated": True,
+        "metadata": {"attempted": []},
+    })
+
+    TestClient(main.app).post("/api/gateway/chat", json={"prompt": "Explain semantic caching"})
+
+    assert cache.stored == []
+
+    print("[PASS] test_a_cut_off_answer_is_never_stored_in_the_cache")
+
+
 def test_gateway_cache_miss_flow():
     client = _client()
     resp = client.post("/api/gateway/chat", json={"prompt": "Hello there"})

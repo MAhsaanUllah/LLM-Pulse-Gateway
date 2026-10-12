@@ -19,15 +19,20 @@ except ImportError:
     LITELLM_AVAILABLE = False
 
 
-# Bare model names LiteLLM cannot route without a provider prefix.
-LITELLM_PROVIDER_PREFIXES = {
-    "gpt-": "openai/",
-    "text-": "openai/",
-    "o1": "openai/",
-    "o3": "openai/",
-    "claude": "anthropic/",
-    "gemini": "gemini/",
-}
+# Cloud providers reachable through LiteLLM. The provider matching the routed
+# model is tried first; the rest follow in this order as fallbacks.
+CLOUD_PROVIDERS = [
+    {"name": "openai", "prefix": "openai/", "model_setting": "DEFAULT_OPENAI_MODEL",
+     "key_setting": "OPENAI_API_KEY", "key_field": "openai_api_key"},
+    {"name": "anthropic", "prefix": "anthropic/", "model_setting": "DEFAULT_ANTHROPIC_MODEL",
+     "key_setting": "ANTHROPIC_API_KEY", "key_field": "anthropic_api_key"},
+    {"name": "groq", "prefix": "groq/", "model_setting": "DEFAULT_GROQ_MODEL",
+     "key_setting": "GROQ_API_KEY", "key_field": "groq_api_key"},
+    {"name": "xai", "prefix": "xai/", "model_setting": "DEFAULT_XAI_MODEL",
+     "key_setting": "XAI_API_KEY", "key_field": "xai_api_key"},
+    {"name": "openrouter", "prefix": "openrouter/", "model_setting": "DEFAULT_OPENROUTER_MODEL",
+     "key_setting": "OPENROUTER_API_KEY", "key_field": "openrouter_api_key"},
+]
 
 
 @dataclass
@@ -222,7 +227,7 @@ class ProviderManager:
             # Reasoning models burn the whole budget on hidden chain-of-thought before
             # answering, which is unusable on a CPU-only host (~6 tok/s).
             "think": False,
-            "options": {"num_ctx": settings.OLLAMA_NUM_CTX},
+            "options": {"num_ctx": settings.OLLAMA_NUM_CTX, "num_predict": settings.OLLAMA_NUM_PREDICT},
             "keep_alive": settings.OLLAMA_KEEP_ALIVE,
         }
 
@@ -244,6 +249,7 @@ class ProviderManager:
                         "content": content,
                         "tokens": prompt_eval + eval_count,
                         "model": f"ollama/{clean_model}",
+                        "truncated": data.get("done_reason") == "length",
                     }
                 logger.warning(
                     "[Ollama Direct] %s rejected model '%s' (HTTP %s): %s",
@@ -259,27 +265,91 @@ class ProviderManager:
 
         return None
 
-    @staticmethod
-    def _as_litellm_model(name: str) -> str:
-        """LiteLLM routes by provider prefix, so bare model names are rejected."""
-        if "/" in name:
-            return name
-        lowered = name.lower()
-        for fragment, prefix in LITELLM_PROVIDER_PREFIXES.items():
-            if lowered.startswith(fragment):
-                return f"{prefix}{name}"
-        return name
+    def _resolve_provider_key(self, entry: Dict[str, str], byok: Optional[BYOKCredentials]):
+        """BYOK wins over the operator's key: returns (key, 'byok'|'operator'|None)."""
+        if byok is not None:
+            own = getattr(byok, entry["key_field"], None)
+            if own:
+                return own, "byok"
+        host = getattr(settings, entry["key_setting"], None) or os.environ.get(entry["key_setting"])
+        if host:
+            return host, "operator"
+        return None, None
 
-    def _litellm_candidates(self, requested_model: str) -> List[str]:
-        """Requested model first (so premium actually reaches Claude), then the fallbacks."""
-        candidates = [requested_model, self.cloud_fallback_model, self.claude_fallback_model]
-        ordered: List[str] = []
-        for candidate in candidates:
-            normalised = self._as_litellm_model(candidate)
-            if normalised.startswith("ollama/") or normalised in ordered:
+    @staticmethod
+    def _provider_for_model(model: str) -> Optional[str]:
+        m = (model or "").lower()
+        if m.startswith(("gpt", "o1", "o3", "text-")):
+            return "openai"
+        if "claude" in m:
+            return "anthropic"
+        if "grok" in m:
+            return "xai"
+        if m.startswith("groq/"):
+            return "groq"
+        if m.startswith("openrouter/"):
+            return "openrouter"
+        if "gemini" in m:
+            return "gemini"
+        return None
+
+    def _cloud_candidates(self, requested_model: str, byok: Optional[BYOKCredentials]) -> List[Dict[str, Any]]:
+        """Cloud providers that actually have a key, with the routed model's provider first."""
+        preferred = self._provider_for_model(requested_model)
+        ordered = sorted(CLOUD_PROVIDERS, key=lambda e: 0 if e["name"] == preferred else 1)
+        candidates: List[Dict[str, Any]] = []
+        for entry in ordered:
+            key, source = self._resolve_provider_key(entry, byok)
+            if not key:
                 continue
-            ordered.append(normalised)
-        return ordered
+            model = getattr(settings, entry["model_setting"], entry["prefix"])
+            candidates.append({
+                "name": entry["name"],
+                "model": f"{entry['prefix']}{model}",
+                "api_key": key,
+                "key_source": source,
+            })
+        return candidates
+
+    def host_provider_status(self) -> List[Dict[str, Any]]:
+        """Which providers the operator's own environment can already reach."""
+        statuses = [
+            {
+                "provider": entry["name"],
+                "env_var": entry["key_setting"],
+                "host_key_configured": bool(self._resolve_provider_key(entry, None)[0]),
+            }
+            for entry in CLOUD_PROVIDERS
+        ]
+        statuses.append({
+            "provider": "gemini",
+            "env_var": "GEMINI_API_KEY",
+            "host_key_configured": bool(self.get_gemini_key()),
+        })
+        statuses.append({
+            "provider": "deepseek",
+            "env_var": "DEEPSEEK_API_KEY",
+            "host_key_configured": bool(self.get_deepseek_key()),
+        })
+        return statuses
+
+    async def list_local_models(self) -> Dict[str, Any]:
+        """Ask the local Ollama daemon which models it has pulled."""
+        url = f"{self.ollama_base_url.rstrip('/')}/api/tags"
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                res = await client.get(url)
+                if res.status_code == 200:
+                    data = res.json()
+                    models = [
+                        {"name": m.get("name"), "size": m.get("size")}
+                        for m in data.get("models", [])
+                        if m.get("name")
+                    ]
+                    return {"available": True, "base_url": self.ollama_base_url, "models": models}
+        except Exception as exc:
+            logger.info("[ProviderManager] Local model detection failed on %s: %s", url, exc)
+        return {"available": False, "base_url": self.ollama_base_url, "models": []}
 
     async def execute_completion(
         self,
@@ -317,6 +387,7 @@ class ProviderManager:
                     "status": "success",
                     "fallback_triggered": False,
                     "tokens_used": ollama_result["tokens"],
+                    "truncated": ollama_result["truncated"],
                     "metadata": {"source": "ollama_native", "attempted": attempted},
                 }
             attempted.append({"tier": "local_slm", "outcome": f"no answer from {self.ollama_base_url}"})
@@ -390,37 +461,45 @@ class ProviderManager:
             attempted.append({"tier": "deepseek", "outcome": "skipped: no DeepSeek key (BYOK or .env)"})
 
         # -------------------------------------------------------------
-        # 4. ATTEMPT LITELLM CLOUD FORTRESS (OPENAI / ANTHROPIC)
+        # 4. ATTEMPT CLOUD PROVIDERS VIA LITELLM (OPENAI / ANTHROPIC /
+        #    GROQ / xAI GROK / OPENROUTER) USING BYOK OR HOST KEYS
         # -------------------------------------------------------------
         if LITELLM_AVAILABLE and litellm is not None:
-            for cloud_candidate in self._litellm_candidates(model):
+            for candidate in self._cloud_candidates(model, byok):
                 try:
-                    logger.info(f"[ProviderManager] Attempting LiteLLM: {cloud_candidate}")
+                    logger.info("[ProviderManager] Attempting %s via LiteLLM: %s", candidate["name"], candidate["model"])
                     res = await litellm.acompletion(
-                        model=cloud_candidate,
+                        model=candidate["model"],
                         messages=messages,
                         temperature=temperature,
                         max_tokens=max_tokens,
+                        api_key=candidate["api_key"],
                         **kwargs,
                     )
                     content = res.choices[0].message.content
                     usage = getattr(res, "usage", None)
                     return {
                         "content": content,
-                        "model_used": cloud_candidate,
-                        "provider": "cloud_fortress",
+                        "model_used": candidate["model"],
+                        "provider": candidate["name"],
                         "status": "fallback" if is_local_target else "success",
                         "fallback_triggered": is_local_target,
                         "tokens_used": usage.total_tokens if usage else 0,
                         "metadata": {
                             "source": "litellm_cloud",
+                            "provider": candidate["name"],
+                            "key_source": candidate["key_source"],
                             "attempted": attempted,
                             "tokens_estimated": usage is None,
                         },
                     }
                 except Exception as exc:
-                    logger.warning(f"[ProviderManager] Cloud fallback '{cloud_candidate}' failed: {exc}")
-                    attempted.append({"tier": "litellm", "outcome": f"{cloud_candidate}: {type(exc).__name__}"})
+                    # LiteLLM puts the api_key it was handed into its exception text.
+                    logger.warning(
+                        "[ProviderManager] Cloud provider '%s' failed: %s",
+                        candidate["name"], self._redact(str(exc), candidate["api_key"]),
+                    )
+                    attempted.append({"tier": candidate["name"], "outcome": type(exc).__name__})
         else:
             attempted.append({"tier": "litellm", "outcome": "skipped: litellm not installed"})
 
@@ -433,7 +512,9 @@ class ProviderManager:
             f"⚠️ [LLM Pulse Gateway — SIMULATED: no model answered]\n\n"
             f"Your prompt: {user_prompt}\n\n"
             f"Cascade: {cascade}\n\n"
-            f"Start Ollama (`ollama serve`) or set GEMINI_API_KEY / DEEPSEEK_API_KEY / OPENAI_API_KEY in `.env`."
+            f"Start Ollama (`ollama serve`), send `byok` with the request, or set a host key in `.env`: "
+            f"GEMINI_API_KEY, DEEPSEEK_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, GROQ_API_KEY, "
+            f"XAI_API_KEY or OPENROUTER_API_KEY."
         )
 
         return {

@@ -17,6 +17,7 @@ if BACKEND_DIR not in sys.path:
 import app.core.providers as providers_module
 from app.core.providers import ProviderManager
 from app.core.router import SmartRouter
+from config import settings
 
 
 def test_smart_router_easy_queries():
@@ -90,7 +91,7 @@ def test_provider_local_success():
     manager = ProviderManager()
 
     async def fake_ollama(messages, model_name):
-        return {"content": "LOCAL PULSE OK", "tokens": 42, "model": f"ollama/{model_name}"}
+        return {"content": "LOCAL PULSE OK", "tokens": 42, "model": f"ollama/{model_name}", "truncated": False}
 
     manager._call_ollama_direct = fake_ollama
     result = asyncio.run(
@@ -195,6 +196,10 @@ class _FakeAsyncClient:
         self.posts.append({"url": url, "json": json, "headers": headers or {}})
         return _FakeResponse(self._payload)
 
+    async def get(self, url):
+        self.posts.append({"url": url, "json": None, "headers": {}})
+        return _FakeResponse(self._payload)
+
 
 def test_ollama_request_disables_thinking_and_caps_context():
     """Reasoning models answer nothing until ~200 hidden tokens are generated, which
@@ -215,12 +220,34 @@ def test_ollama_request_disables_thinking_and_caps_context():
     sent = client.posts[0]["json"]
     assert sent["model"] == "gemma4:e2b"
     assert sent["think"] is False
-    assert sent["options"] == {"num_ctx": settings.OLLAMA_NUM_CTX}
+    assert sent["options"]["num_ctx"] == settings.OLLAMA_NUM_CTX
+    assert sent["options"]["num_predict"] == settings.OLLAMA_NUM_PREDICT
     assert sent["keep_alive"] == settings.OLLAMA_KEEP_ALIVE
     assert result["tokens"] == 17
     assert result["content"] == "LOCAL PULSE OK"
+    assert result["truncated"] is False
 
     print("[PASS] test_ollama_request_disables_thinking_and_caps_context")
+
+
+def test_ollama_answer_cut_short_by_the_budget_is_marked_truncated():
+    """A cap turns long answers into cut-off text, so the caller must be able to see
+    that the model stopped for length rather than finishing its answer."""
+    manager = ProviderManager()
+    client = _FakeAsyncClient(
+        {"message": {"role": "assistant", "content": "Semantic caching means"},
+         "eval_count": 256, "prompt_eval_count": 20, "done_reason": "length"}
+    )
+    original = providers_module.httpx.AsyncClient
+    providers_module.httpx.AsyncClient = client
+    try:
+        result = asyncio.run(manager._call_ollama_direct([{"role": "user", "content": "hi"}], "ollama/gemma4:e2b"))
+    finally:
+        providers_module.httpx.AsyncClient = original
+
+    assert result["truncated"] is True
+
+    print("[PASS] test_ollama_answer_cut_short_by_the_budget_is_marked_truncated")
 
 
 def test_ollama_empty_answer_counts_as_a_miss():
@@ -295,23 +322,119 @@ def test_deepseek_without_a_key_never_leaves_the_process():
     print("[PASS] test_deepseek_without_a_key_never_leaves_the_process")
 
 
-def test_litellm_model_names_get_provider_prefixes():
-    """LiteLLM rejects bare model names, so the cascade must prefix them."""
+def test_provider_is_chosen_from_the_routed_model_name():
+    """LiteLLM routes by provider prefix, so the cascade must know which provider a
+    bare model name belongs to before it can reach the right one first."""
     manager = ProviderManager()
-    assert manager._as_litellm_model("gpt-4o-mini") == "openai/gpt-4o-mini"
-    assert manager._as_litellm_model("claude-3-5-sonnet-20241022") == "anthropic/claude-3-5-sonnet-20241022"
-    assert manager._as_litellm_model("openai/gpt-4o-mini") == "openai/gpt-4o-mini"
 
-    # Premium routing must actually reach Claude first, not retry GPT.
-    assert manager._litellm_candidates("claude-3-5-sonnet-20241022")[0] == "anthropic/claude-3-5-sonnet-20241022"
+    assert manager._provider_for_model("gpt-4o-mini") == "openai"
+    assert manager._provider_for_model("claude-3-5-sonnet-20241022") == "anthropic"
+    assert manager._provider_for_model("grok-2-latest") == "xai"
+    assert manager._provider_for_model("groq/llama-3.3-70b-versatile") == "groq"
+    assert manager._provider_for_model("ollama/gemma4:e2b") is None
 
-    # Local models are already handled by Tier A and must not be re-sent through LiteLLM.
-    assert manager._litellm_candidates("ollama/qwen3.5:4b") == [
-        "openai/gpt-4o-mini",
-        "anthropic/claude-3-5-sonnet-20241022",
-    ]
+    print("[PASS] test_provider_is_chosen_from_the_routed_model_name")
 
-    print("[PASS] test_litellm_model_names_get_provider_prefixes")
+
+def test_cloud_candidates_only_include_providers_that_have_a_key(monkeypatch):
+    """A candidate without a key would either fail or, worse, bill an unrelated
+    account, so providers with no BYOK and no host key must not be offered."""
+    manager = ProviderManager()
+
+    assert manager._cloud_candidates("claude-3-5-sonnet-20241022", None) == []
+
+    monkeypatch.setattr(settings, "ANTHROPIC_API_KEY", "host-anthropic-key", raising=False)
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "host-openai-key", raising=False)
+    candidates = manager._cloud_candidates("claude-3-5-sonnet-20241022", None)
+
+    # The routed model's provider leads, and every name carries its provider prefix.
+    assert candidates[0]["name"] == "anthropic"
+    assert candidates[0]["model"] == f"anthropic/{settings.DEFAULT_ANTHROPIC_MODEL}"
+    assert candidates[0]["key_source"] == "operator"
+    assert {c["name"] for c in candidates} == {"anthropic", "openai"}
+
+    print("[PASS] test_cloud_candidates_only_include_providers_that_have_a_key")
+
+
+def test_a_visitors_key_selects_that_provider_and_marks_the_source(monkeypatch):
+    """With no host keys at all, a caller-supplied OpenAI key must be what unlocks
+    the LiteLLM tier, and the provenance has to say the visitor paid."""
+    from app.core.credentials import BYOKCredentials
+
+    manager = ProviderManager()
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", None, raising=False)
+    candidates = manager._cloud_candidates(
+        "gpt-4o-mini", BYOKCredentials(openai_api_key="visitor-openai-key")
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0] == {
+        "name": "openai",
+        "model": f"openai/{settings.DEFAULT_OPENAI_MODEL}",
+        "api_key": "visitor-openai-key",
+        "key_source": "byok",
+    }
+
+    print("[PASS] test_a_visitors_key_selects_that_provider_and_marks_the_source")
+
+
+def test_host_provider_status_reports_keys_without_exposing_them():
+    """The UI shows which providers the host can already reach; it must never receive
+    the key itself, only a boolean."""
+    manager = ProviderManager()
+    settings.GROQ_API_KEY = "host-groq-key"
+    try:
+        statuses = manager.host_provider_status()
+    finally:
+        settings.GROQ_API_KEY = None
+
+    groq = next(s for s in statuses if s["provider"] == "groq")
+    assert groq["host_key_configured"] is True
+    assert groq["env_var"] == "GROQ_API_KEY"
+    assert "key" not in groq
+    assert "host-groq-key" not in str(statuses)
+
+    print("[PASS] test_host_provider_status_reports_keys_without_exposing_them")
+
+
+def test_local_models_are_read_from_the_ollama_daemon():
+    """The model picker must show what this machine actually pulled, not a fixed list."""
+    manager = ProviderManager()
+    client = _FakeAsyncClient({"models": [{"name": "gemma4:e2b", "size": 1234}, {"name": "nomic-embed-text"}]})
+    original = providers_module.httpx.AsyncClient
+    providers_module.httpx.AsyncClient = client
+    try:
+        result = asyncio.run(manager.list_local_models())
+    finally:
+        providers_module.httpx.AsyncClient = original
+
+    assert result["available"] is True
+    assert [m["name"] for m in result["models"]] == ["gemma4:e2b", "nomic-embed-text"]
+    assert client.posts[0]["url"].endswith("/api/tags")
+
+    print("[PASS] test_local_models_are_read_from_the_ollama_daemon")
+
+
+def test_models_endpoint_serves_the_catalog_and_host_key_status(monkeypatch):
+    """The settings panel reads one endpoint for both, so the gateway must expose it
+    without the suite touching a live daemon."""
+    import app.api.gateway as gateway_module
+
+    class _StubManager:
+        async def list_local_models(self):
+            return {"available": True, "base_url": "http://localhost:11434", "models": [{"name": "gemma4:e2b", "size": 1}]}
+
+        def host_provider_status(self):
+            return [{"provider": "gemini", "env_var": "GEMINI_API_KEY", "host_key_configured": False}]
+
+    monkeypatch.setattr(gateway_module, "provider_manager", _StubManager())
+    catalog = asyncio.run(gateway_module.get_model_catalog())
+
+    assert catalog.ollama_available is True
+    assert catalog.models[0].name == "gemma4:e2b"
+    assert catalog.providers[0].env_var == "GEMINI_API_KEY"
+
+    print("[PASS] test_models_endpoint_serves_the_catalog_and_host_key_status")
 
 
 if __name__ == "__main__":
@@ -323,8 +446,11 @@ if __name__ == "__main__":
     test_provider_stand_in_is_labelled()
     test_provider_gemini_is_reported_as_cloud()
     test_ollama_request_disables_thinking_and_caps_context()
+    test_ollama_answer_cut_short_by_the_budget_is_marked_truncated()
     test_ollama_empty_answer_counts_as_a_miss()
     test_deepseek_is_called_directly_with_its_own_key()
     test_deepseek_without_a_key_never_leaves_the_process()
-    test_litellm_model_names_get_provider_prefixes()
+    test_provider_is_chosen_from_the_routed_model_name()
+    test_host_provider_status_reports_keys_without_exposing_them()
+    test_local_models_are_read_from_the_ollama_daemon()
     print("\nALL VERIFICATION TESTS PASSED SUCCESSFULLY!")

@@ -234,6 +234,39 @@ def test_provider_never_logs_the_visitors_key_even_when_the_api_echoes_it(caplog
     print("[PASS] test_provider_never_logs_the_visitors_key_even_when_the_api_echoes_it")
 
 
+def test_the_litellm_tier_never_echoes_the_visitors_key(caplog):
+    """LiteLLM raises exceptions whose text contains the api_key it was given, so a
+    failing cloud tier must not put that key in the log or in the cascade trace."""
+    import logging
+
+    manager = ProviderManager()
+
+    class _EchoingLiteLLM:
+        @staticmethod
+        async def acompletion(**kwargs):
+            raise Exception(f"BadRequest: invalid api key {kwargs['api_key']}")
+
+    original_litellm = providers_module.litellm
+    original_flag = providers_module.LITELLM_AVAILABLE
+    providers_module.litellm = _EchoingLiteLLM()
+    providers_module.LITELLM_AVAILABLE = True
+    with caplog.at_level(logging.WARNING):
+        result = asyncio.run(
+            manager.execute_completion(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": "hi"}],
+                byok=BYOKCredentials(openai_api_key="sk-visitor-litellm-secret"),
+            )
+        )
+    providers_module.litellm = original_litellm
+    providers_module.LITELLM_AVAILABLE = original_flag
+
+    assert "sk-visitor-litellm-secret" not in caplog.text
+    assert "sk-visitor-litellm-secret" not in str(result)
+
+    print("[PASS] test_the_litellm_tier_never_echoes_the_visitors_key")
+
+
 if __name__ == "__main__":
     test_byok_gemini_key_wins_over_the_operators_key()
     test_byok_deepseek_key_wins_over_the_operators_key()
