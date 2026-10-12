@@ -3,7 +3,9 @@ uvicorn[standard]
 pydantic
 pydantic-settings
 qdrant-client
-sentence-transformers
-numpy
 httpx
 pytest
+
+# Optional cloud fallback tier (ProviderManager Tier C).
+# Embeddings come from the local Ollama service, so no python ML stack is required.
+litellm

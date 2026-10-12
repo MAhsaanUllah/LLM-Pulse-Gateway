@@ -3,6 +3,8 @@ import logging
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 
+from config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,14 +50,14 @@ class SmartRouter:
         self,
         token_threshold: int = 80,
         complexity_score_threshold: float = 0.40,
-        default_local_model: str = "ollama/llama3.2:3b",
-        default_cloud_model: str = "gpt-4o-mini",
+        default_local_model: Optional[str] = None,
+        default_cloud_model: Optional[str] = None,
         premium_cloud_model: str = "claude-3-5-sonnet-20241022",
     ):
         self.token_threshold = token_threshold
         self.complexity_score_threshold = complexity_score_threshold
-        self.default_local_model = default_local_model
-        self.default_cloud_model = default_cloud_model
+        self.default_local_model = default_local_model or f"ollama/{settings.OLLAMA_MODEL}"
+        self.default_cloud_model = default_cloud_model or settings.DEFAULT_GEMINI_MODEL
         self.premium_cloud_model = premium_cloud_model
 
         # Pre-compile regexes

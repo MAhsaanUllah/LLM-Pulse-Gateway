@@ -8,27 +8,43 @@ class Settings(BaseSettings):
     APP_NAME: str = "LLM Pulse Gateway"
     DEBUG: bool = True
     PORT: int = 8000
-
-    # Redis Cache Configuration
-    REDIS_HOST: str = "localhost"
-    REDIS_PORT: int = 6379
+    CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
 
     # Qdrant Vector Store Configuration
     QDRANT_HOST: str = "localhost"
     QDRANT_PORT: int = 6333
 
-    # Semantic Cache / Embeddings
-    EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
-    EMBEDDING_DIM: int = 384
+    # Semantic Cache / Embeddings (served by Ollama, vector width comes from the model)
+    EMBEDDING_MODEL: str = "nomic-embed-text"
     CACHE_COLLECTION: str = "semantic_cache"
     CACHE_SIMILARITY_THRESHOLD: float = 0.90
 
     # Ollama Local SLM Configuration
     OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_MODEL: str = "gemma4:e2b"
+    # Ollama defaults to the model's full context window (131k for these), which
+    # allocates a KV cache that dominates latency when inference falls back to CPU.
+    OLLAMA_NUM_CTX: int = 4096
+    # Ollama unloads a model 5 minutes after the last request; a cold reload costs
+    # ~12-50 s on CPU, which is longer than the inference budget below.
+    OLLAMA_KEEP_ALIVE: str = "30m"
+
+    # Inference budget. A cold local model can spend ~20s just loading weights, so
+    # this has to stay well above the first-token latency of the largest local model.
+    INFERENCE_TIMEOUT_SECONDS: float = 90.0
 
     # Cloud LLM API Keys
     OPENAI_API_KEY: Optional[str] = None
     ANTHROPIC_API_KEY: Optional[str] = None
+    GEMINI_API_KEY: Optional[str] = None
+    GOOGLE_API_KEY: Optional[str] = None
+    DEFAULT_GEMINI_MODEL: str = "gemini-3.8-flash"
+
+    # DeepSeek is OpenAI-compatible but called directly, so it needs no LiteLLM
+    # and cannot be hijacked by an unrelated OPENAI_API_KEY in the environment.
+    DEEPSEEK_API_KEY: Optional[str] = None
+    DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
+    DEFAULT_DEEPSEEK_MODEL: str = "deepseek-chat"
 
 
 settings = Settings()

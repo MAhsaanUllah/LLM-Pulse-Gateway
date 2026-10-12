@@ -15,8 +15,8 @@ if BACKEND_DIR not in sys.path:
 
 from fastapi.testclient import TestClient
 
-import main
 import app.api.gateway as gateway_module
+import main
 
 
 class StubCache:
@@ -28,22 +28,27 @@ class StubCache:
         return self.hit
 
     async def set(self, query, response, metadata=None):
-        self.stored.append((query, response))
+        self.stored.append((query, response, metadata))
 
 
 class StubProvider:
-    async def execute_completion(self, model, messages, **kwargs):
-        return {
-            "content": f"[stub:{model}] {messages[-1]['content']}",
-            "model_used": model,
+    def __init__(self, completion=None):
+        self.completion = completion or {
+            "content": "[stub] answer that is comfortably longer than twenty characters",
+            "model_used": "ollama/qwen3.5:4b",
             "provider": "local_slm",
             "status": "success",
+            "tokens_used": 42,
+            "metadata": {"attempted": []},
         }
 
+    async def execute_completion(self, model, messages, **kwargs):
+        return self.completion
 
-def _client(cache_hit=None):
+
+def _client(cache_hit=None, completion=None):
     gateway_module.cache_service = StubCache(hit=cache_hit)
-    gateway_module.provider_manager = StubProvider()
+    gateway_module.provider_manager = StubProvider(completion=completion)
     return TestClient(main.app)
 
 
@@ -53,20 +58,99 @@ def test_gateway_cache_miss_flow():
     assert resp.status_code == 200
     body = resp.json()
     assert body["cache_hit"] is False
-    assert body["response"].startswith("[stub:")
+    assert body["response"].startswith("[stub]")
     assert body["destination"] == "local_slm"
+    assert body["status"] == "success"
+    assert body["provider_used"] == "local_slm"
+    assert body["tokens_used"] == 42
     print("[PASS] test_gateway_cache_miss_flow")
 
 
+def test_gateway_reports_provenance_of_a_simulated_answer():
+    """A stand-in answer must not be billed or presented as a model response."""
+    client = _client(
+        completion={
+            "content": "SIMULATED: no model answered",
+            "model_used": "ollama/qwen3.5:4b (stand-in)",
+            "provider": "none",
+            "status": "simulated",
+            "tokens_used": 0,
+            "metadata": {"attempted": [{"tier": "local_slm", "outcome": "no answer"}]},
+        }
+    )
+    body = client.post("/api/gateway/chat", json={"prompt": "Hello there"}).json()
+    assert body["status"] == "simulated"
+    assert body["provider_used"] == "none"
+    assert body["model"].endswith("(stand-in)")
+    assert body["cost_usd"] == 0.0
+    print("[PASS] test_gateway_reports_provenance_of_a_simulated_answer")
+
+
 def test_gateway_cache_hit_flow():
-    client = _client(cache_hit={"response": "cached answer", "metadata": {}, "similarity": 0.97})
+    client = _client(
+        cache_hit={
+            "response": "cached answer",
+            "metadata": {"model": "ollama/qwen3.5:4b", "provider": "local_slm", "tokens": 42},
+            "similarity": 0.97,
+        }
+    )
     resp = client.post("/api/gateway/chat", json={"prompt": "Hello there"})
     assert resp.status_code == 200
     body = resp.json()
     assert body["cache_hit"] is True
+    assert body["status"] == "cached"
     assert body["response"] == "cached answer"
     assert body["destination"] == "memory_vault"
+    assert body["model"] == "ollama/qwen3.5:4b"
+    assert "evaluation_score" not in body
     print("[PASS] test_gateway_cache_hit_flow")
+
+
+def test_gateway_returns_its_own_signal_trail():
+    client = _client()
+    body = client.post("/api/gateway/chat", json={"prompt": "Hello there"}).json()
+    assert [packet["event"] for packet in body["signals"]] == [
+        "CACHE_MISS",
+        "ROUTING_SIGNAL",
+        "MODEL_EXECUTION",
+        "EVALUATION",
+        "COMPLETION",
+    ]
+    evaluation = body["signals"][3]["metadata"]
+    assert evaluation["passed"] is True
+    assert evaluation["checks"] == {"non_empty": True, "real_model_answered": True}
+    print("[PASS] test_gateway_returns_its_own_signal_trail")
+
+
+def test_evaluation_reports_a_stand_in_as_failed():
+    """No model answered, so the evaluation step must say so instead of scoring it."""
+    client = _client(
+        completion={
+            "content": "SIMULATED: no model answered",
+            "model_used": "ollama/qwen3.5:4b (stand-in)",
+            "provider": "none",
+            "status": "simulated",
+            "tokens_used": 0,
+            "metadata": {"attempted": []},
+        }
+    )
+    body = client.post("/api/gateway/chat", json={"prompt": "Hello there"}).json()
+    evaluation = body["signals"][3]["metadata"]
+    assert evaluation["passed"] is False
+    assert evaluation["checks"]["real_model_answered"] is False
+    print("[PASS] test_evaluation_reports_a_stand_in_as_failed")
+
+
+def test_gateway_caches_with_provenance_metadata():
+    client = _client()
+    client.post("/api/gateway/chat", json={"prompt": "Hello there"})
+    query, response, metadata = gateway_module.cache_service.stored[0]
+    assert query == "Hello there"
+    assert metadata["model"] == "ollama/qwen3.5:4b"
+    assert metadata["provider"] == "local_slm"
+    assert metadata["tokens"] == 42
+    assert "evaluation_score" not in metadata
+    print("[PASS] test_gateway_caches_with_provenance_metadata")
 
 
 def test_websocket_emits_step_packets():
@@ -86,6 +170,10 @@ def test_websocket_emits_step_packets():
 
 if __name__ == "__main__":
     test_gateway_cache_miss_flow()
+    test_gateway_reports_provenance_of_a_simulated_answer()
     test_gateway_cache_hit_flow()
+    test_gateway_returns_its_own_signal_trail()
+    test_evaluation_reports_a_stand_in_as_failed()
+    test_gateway_caches_with_provenance_metadata()
     test_websocket_emits_step_packets()
     print("\nALL GATEWAY / TELEMETRY TESTS PASSED!")

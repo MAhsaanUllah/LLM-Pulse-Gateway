@@ -5,21 +5,25 @@ logger = logging.getLogger(__name__)
 
 
 class EvaluationEngine:
-    """Evaluates response quality, hallucination likelihood, and faithfulness metrics."""
+    """
+    Screens an answer for the failures this gateway can actually observe.
 
-    def __init__(self):
-        pass
+    RAGAS-style faithfulness needs retrieved context chunks to compare against, and
+    this gateway has none, so no such score is reported.
+    """
 
-    async def evaluate_faithfulness(self, query: str, response: str) -> Dict[str, Any]:
-        """Calculates simulated RAGAS faithfulness and relevance scores."""
-        # Baseline heuristic calculation
-        score = 0.95 if len(response) > 20 else 0.80
-        logger.info(f"Evaluation calculated faithfulness score: {score}")
-        return {
-            "faithfulness_score": score,
-            "relevance_score": 0.92,
-            "passed_quality_gate": score >= 0.85,
+    async def evaluate(self, response: str, provider_status: str) -> Dict[str, Any]:
+        non_empty = bool(response.strip())
+        real_model_answered = provider_status != "simulated"
+        result = {
+            "passed": non_empty and real_model_answered,
+            "checks": {
+                "non_empty": non_empty,
+                "real_model_answered": real_model_answered,
+            },
         }
+        logger.info(f"Evaluation verdict: {result}")
+        return result
 
 
 eval_engine = EvaluationEngine()
