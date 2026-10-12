@@ -23,6 +23,10 @@ class StructuredPulseResponse(BaseModel):
     status: str = "success"
     provider_used: str = ""
     tokens_used: int = 0
+    key_source: Optional[str] = Field(
+        default=None,
+        description='"byok" when the caller\'s key paid, "operator" when the host key did, None if no cloud key was used',
+    )
     truncated: bool = Field(
         default=False, description="True when the answer hit the generated-token budget and was cut off"
     )

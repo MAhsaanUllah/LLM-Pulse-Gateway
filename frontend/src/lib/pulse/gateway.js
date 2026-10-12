@@ -2,6 +2,7 @@
 export const API_BASE = 'http://localhost:8000';
 export const CHAT_URL = `${API_BASE}/api/gateway/chat`;
 export const USAGE_URL = `${API_BASE}/api/gateway/usage`;
+export const MODELS_URL = `${API_BASE}/api/gateway/models`;
 export const SIGNALS_WS_URL = `ws://localhost:8000/ws/signals`;
 
 export async function postChat(prompt, tier, byok) {
@@ -24,6 +25,14 @@ export async function fetchUsage() {
   const res = await fetch(USAGE_URL);
   if (!res.ok) {
     throw new Error(`Usage HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function fetchModels() {
+  const res = await fetch(MODELS_URL);
+  if (!res.ok) {
+    throw new Error(`Models HTTP ${res.status}`);
   }
   return res.json();
 }

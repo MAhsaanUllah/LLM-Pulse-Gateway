@@ -100,6 +100,7 @@ replay a request's path without subscribing to the socket.
   "tokens_used": 281,
   "latency_ms": 12369.28,
   "cost_usd": 0.0,
+  "key_source": null,
   "truncated": true,
   "signals": [ ... ]
 }
@@ -108,6 +109,11 @@ replay a request's path without subscribing to the socket.
 `status` is one of `success`, `cached`, `fallback`, `simulated`, and `attempted`
 inside `metadata` records every tier the cascade tried and why each one did not
 answer (`skipped: no Gemini key (BYOK or .env)`, `HTTP 401`, `TimeoutException`, ...).
+
+**`key_source` says whose credential the tier that answered used** — `"byok"` when the
+caller's request body carried the key, `"operator"` when the host's `.env`/environment
+key did, and `null` when no cloud credential was involved (local Ollama, cache hit,
+stand-in). The UI labels an answer "Your key" or "Host key" from exactly this field.
 
 **`cost_usd` is the router's own estimate**, not an invoice: it comes from the route
 decision and is `0.0` for local, cached, and simulated answers. Tokens are the real

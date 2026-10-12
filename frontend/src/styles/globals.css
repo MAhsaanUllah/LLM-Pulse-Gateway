@@ -25,3 +25,13 @@ body {
   image-rendering: pixelated;
   image-rendering: crisp-edges;
 }
+
+/* Hide a scrollbar while keeping the element scrollable (settings dialog list). */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}

@@ -174,6 +174,7 @@ async def process_gateway_request(req: GatewayRequest) -> StructuredPulseRespons
     )
 
     estimated_cost = 0.0 if completion["status"] == "simulated" else route_decision["estimated_cost"]
+    key_source = (completion.get("metadata") or {}).get("key_source")
     ledger(
         destination,
         completion["model_used"],
@@ -181,7 +182,7 @@ async def process_gateway_request(req: GatewayRequest) -> StructuredPulseRespons
         False,
         completion["tokens_used"],
         estimated_cost,
-        (completion.get("metadata") or {}).get("key_source"),
+        key_source,
         latency=latency_ms,
     )
 
@@ -196,6 +197,7 @@ async def process_gateway_request(req: GatewayRequest) -> StructuredPulseRespons
         status=completion["status"],
         provider_used=completion["provider"],
         tokens_used=completion["tokens_used"],
+        key_source=key_source,
         truncated=truncated,
         signals=[packet.model_dump() for packet in emitted],
     )

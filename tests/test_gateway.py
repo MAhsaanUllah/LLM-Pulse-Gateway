@@ -174,6 +174,27 @@ def test_gateway_reports_provenance_of_a_simulated_answer():
     print("[PASS] test_gateway_reports_provenance_of_a_simulated_answer")
 
 
+def test_gateway_says_whose_key_paid_for_the_call():
+    """The UI labels a request "byok" or "operator" so the visitor knows whether their
+    own key or the host's was spent. The label only exists in the provider metadata
+    today, so the response body has to carry it out."""
+    client = _client(completion={
+        "content": "[stub] answer that is comfortably longer than twenty characters",
+        "model_used": "openai/gpt-4o-mini",
+        "provider": "openai",
+        "status": "success",
+        "tokens_used": 42,
+        "metadata": {"attempted": [], "key_source": "byok"},
+    })
+    body = client.post("/api/gateway/chat", json={"prompt": "Hello there"}).json()
+    assert body["key_source"] == "byok"
+
+    local = _client()
+    assert local.post("/api/gateway/chat", json={"prompt": "Hello there"}).json()["key_source"] is None
+
+    print("[PASS] test_gateway_says_whose_key_paid_for_the_call")
+
+
 def test_gateway_cache_hit_flow():
     client = _client(
         cache_hit={
@@ -263,6 +284,7 @@ if __name__ == "__main__":
     test_a_stand_in_answer_is_never_stored_in_the_cache()
     test_gateway_asks_for_plain_bounded_prose()
     test_gateway_reports_provenance_of_a_simulated_answer()
+    test_gateway_says_whose_key_paid_for_the_call()
     test_gateway_cache_hit_flow()
     test_gateway_returns_its_own_signal_trail()
     test_evaluation_reports_a_stand_in_as_failed()
