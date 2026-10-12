@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 import httpx
 
 from config import settings
+from app.core.credentials import BYOKCredentials
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +69,18 @@ class ProviderManager:
         self.cloud_fallback_model = cloud_fallback_model
         self.claude_fallback_model = claude_fallback_model
 
-    def get_gemini_key(self) -> Optional[str]:
-        """Fetches Gemini API Key from settings or environment variables."""
+    @staticmethod
+    def _redact(text: str, secret: Optional[str]) -> str:
+        """Providers echo the offending key back in their error bodies, so nothing
+        that reaches the log may still contain it."""
+        if secret:
+            text = text.replace(secret, "***redacted-key***")
+        return text[:200]
+
+    def get_gemini_key(self, byok: Optional[BYOKCredentials] = None) -> Optional[str]:
+        """The caller's own key pays for the call, so it wins over the operator's key."""
+        if byok and byok.gemini_api_key:
+            return byok.gemini_api_key
         return (
             settings.GEMINI_API_KEY
             or settings.GOOGLE_API_KEY
@@ -81,9 +92,10 @@ class ProviderManager:
         self,
         messages: List[Dict[str, str]],
         model_name: str,
+        byok: Optional[BYOKCredentials] = None,
     ) -> Optional[Dict[str, Any]]:
         """Direct zero-dependency Google Gemini REST API caller via HTTPX."""
-        api_key = self.get_gemini_key()
+        api_key = self.get_gemini_key(byok)
         if not api_key:
             return None
 
@@ -120,19 +132,31 @@ class ProviderManager:
                             "model": f"gemini/{clean_model}",
                         }
                 else:
-                    logger.warning(f"[Gemini Direct] API returned {res.status_code}: {res.text}")
+                    logger.warning(
+                        "[Gemini Direct] API returned %s: %s",
+                        res.status_code,
+                        self._redact(res.text, api_key),
+                    )
+                    return {"error": f"HTTP {res.status_code}"}
         except Exception as exc:
-            logger.warning(f"[Gemini Direct] Request failed: {exc}")
+            logger.warning("[Gemini Direct] Request failed: %s", exc)
+            return {"error": type(exc).__name__}
 
         return None
+
+    def get_deepseek_key(self, byok: Optional[BYOKCredentials] = None) -> Optional[str]:
+        if byok and byok.deepseek_api_key:
+            return byok.deepseek_api_key
+        return settings.DEEPSEEK_API_KEY or os.environ.get("DEEPSEEK_API_KEY")
 
     async def _call_deepseek_direct(
         self,
         messages: List[Dict[str, str]],
         model_name: Optional[str] = None,
+        byok: Optional[BYOKCredentials] = None,
     ) -> Optional[Dict[str, Any]]:
         """Direct zero-dependency DeepSeek caller (OpenAI-compatible schema, own key)."""
-        api_key = settings.DEEPSEEK_API_KEY or os.environ.get("DEEPSEEK_API_KEY")
+        api_key = self.get_deepseek_key(byok)
         if not api_key:
             return None
 
@@ -171,10 +195,14 @@ class ProviderManager:
                         "model": f"deepseek/{clean_model}",
                     }
                 logger.warning(
-                    "[DeepSeek Direct] API returned %s: %s", res.status_code, res.text[:200]
+                    "[DeepSeek Direct] API returned %s: %s",
+                    res.status_code,
+                    self._redact(res.text, api_key),
                 )
+                return {"error": f"HTTP {res.status_code}"}
         except Exception as exc:
             logger.warning("[DeepSeek Direct] Request failed: %s", exc)
+            return {"error": type(exc).__name__}
 
         return None
 
@@ -260,13 +288,14 @@ class ProviderManager:
         temperature: float = 0.7,
         max_tokens: int = 1024,
         allow_fallback: bool = True,
+        byok: Optional[BYOKCredentials] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         """
         Executes completion with resilient cascading fallback:
         1. Target model (e.g. Local SLM via Ollama)
-        2. Google Gemini (if GEMINI_API_KEY is present or model requested)
-        3. DeepSeek (if DEEPSEEK_API_KEY is present)
+        2. Google Gemini (caller's BYOK key, else GEMINI_API_KEY)
+        3. DeepSeek (caller's BYOK key, else DEEPSEEK_API_KEY)
         4. Cloud Fortress (OpenAI / Claude via LiteLLM)
         5. Intelligent Stand-In Simulation (Zero Crash Guarantee)
         """
@@ -299,11 +328,11 @@ class ProviderManager:
         # -------------------------------------------------------------
         # 2. ATTEMPT GEMINI (FAST & COST-EFFECTIVE CLOUD ALTERNATIVE)
         # -------------------------------------------------------------
-        gemini_key = self.get_gemini_key()
+        gemini_key = self.get_gemini_key(byok)
         if gemini_key:
             logger.info("[ProviderManager] Dispatching to Google Gemini...")
-            gemini_result = await self._call_gemini_direct(messages, self.default_gemini_model)
-            if gemini_result:
+            gemini_result = await self._call_gemini_direct(messages, self.default_gemini_model, byok)
+            if gemini_result and gemini_result.get("content"):
                 return {
                     "content": gemini_result["content"],
                     "model_used": gemini_result["model"],
@@ -313,23 +342,29 @@ class ProviderManager:
                     "tokens_used": gemini_result["tokens"],
                     "metadata": {
                         "source": "gemini_direct",
+                        "key_source": "byok" if byok and byok.gemini_api_key else "operator",
                         "attempted": attempted,
                         "fallback_reason": "Local SLM unavailable, served via Google Gemini"
                         if is_local_target
                         else "Direct Gemini",
                     },
                 }
-            attempted.append({"tier": "gemini", "outcome": f"{self.default_gemini_model} did not answer"})
+            attempted.append({
+                "tier": "gemini",
+                "outcome": f"{self.default_gemini_model}: "
+                + (gemini_result["error"] if gemini_result else "no answer"),
+            })
         else:
-            attempted.append({"tier": "gemini", "outcome": "skipped: no GEMINI_API_KEY set"})
+            attempted.append({"tier": "gemini", "outcome": "skipped: no Gemini key (BYOK or .env)"})
 
         # -------------------------------------------------------------
         # 3. ATTEMPT DEEPSEEK (DIRECT, NO LITELLM KEY AMBIGUITY)
         # -------------------------------------------------------------
-        if settings.DEEPSEEK_API_KEY or os.environ.get("DEEPSEEK_API_KEY"):
+        deepseek_key = self.get_deepseek_key(byok)
+        if deepseek_key:
             logger.info("[ProviderManager] Dispatching to DeepSeek...")
-            deepseek_result = await self._call_deepseek_direct(messages)
-            if deepseek_result:
+            deepseek_result = await self._call_deepseek_direct(messages, byok=byok)
+            if deepseek_result and deepseek_result.get("content"):
                 return {
                     "content": deepseek_result["content"],
                     "model_used": deepseek_result["model"],
@@ -339,15 +374,20 @@ class ProviderManager:
                     "tokens_used": deepseek_result["tokens"],
                     "metadata": {
                         "source": "deepseek_direct",
+                        "key_source": "byok" if byok and byok.deepseek_api_key else "operator",
                         "attempted": attempted,
                         "fallback_reason": "Local SLM unavailable, served via DeepSeek"
                         if is_local_target
                         else "Direct DeepSeek",
                     },
                 }
-            attempted.append({"tier": "deepseek", "outcome": f"{settings.DEFAULT_DEEPSEEK_MODEL} did not answer"})
+            attempted.append({
+                "tier": "deepseek",
+                "outcome": f"{settings.DEFAULT_DEEPSEEK_MODEL}: "
+                + (deepseek_result["error"] if deepseek_result else "no answer"),
+            })
         else:
-            attempted.append({"tier": "deepseek", "outcome": "skipped: no DEEPSEEK_API_KEY set"})
+            attempted.append({"tier": "deepseek", "outcome": "skipped: no DeepSeek key (BYOK or .env)"})
 
         # -------------------------------------------------------------
         # 4. ATTEMPT LITELLM CLOUD FORTRESS (OPENAI / ANTHROPIC)

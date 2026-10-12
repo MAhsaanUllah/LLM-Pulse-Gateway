@@ -9,6 +9,7 @@ if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
 import app.core.providers as providers_module
+from app.core.usage import UsageLedger
 from config import settings
 
 CREDENTIAL_VARS = (
@@ -23,3 +24,11 @@ def no_live_cloud_credentials(monkeypatch):
         monkeypatch.delenv(var, raising=False)
         monkeypatch.setattr(settings, var, None, raising=False)
     monkeypatch.setattr(providers_module, "LITELLM_AVAILABLE", False)
+
+
+@pytest.fixture(autouse=True)
+def usage_ledger_writes_to_a_temp_file(tmp_path, monkeypatch):
+    """The default ledger is the operator's real file; tests must not annotate it."""
+    ledger = UsageLedger(db_path=str(tmp_path / "test-usage.sqlite"))
+    monkeypatch.setattr("app.core.usage.usage_ledger", ledger)
+    monkeypatch.setattr("app.api.gateway.usage_ledger", ledger)

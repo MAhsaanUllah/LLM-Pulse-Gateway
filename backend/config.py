@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     # this has to stay well above the first-token latency of the largest local model.
     INFERENCE_TIMEOUT_SECONDS: float = 90.0
 
+    # Usage ledger (SQLite, standard library). Gitignored local file; delete it to reset.
+    USAGE_DB_PATH: str = "data/usage.sqlite"
+
     # Cloud LLM API Keys
     OPENAI_API_KEY: Optional[str] = None
     ANTHROPIC_API_KEY: Optional[str] = None

@@ -6,10 +6,16 @@ from app.api.websocket import SignalEvent, SignalPacket, stream_manager
 from app.core.cache import cache_service
 from app.core.providers import provider_manager
 from app.core.router import smart_router
+from app.core.usage import usage_ledger
 from app.features.evals import eval_engine
-from app.features.parser import GatewayRequest, StructuredPulseResponse
+from app.features.parser import GatewayRequest, StructuredPulseResponse, UsageSummaryResponse
 
 router = APIRouter()
+
+
+@router.get("/gateway/usage", response_model=UsageSummaryResponse)
+async def get_usage_summary() -> UsageSummaryResponse:
+    return UsageSummaryResponse(**usage_ledger.totals(), by_route=usage_ledger.per_route())
 
 
 @router.post("/gateway/chat", response_model=StructuredPulseResponse)
@@ -24,6 +30,19 @@ async def process_gateway_request(req: GatewayRequest) -> StructuredPulseRespons
 
     def elapsed_ms() -> float:
         return round((time.time() - start_time) * 1000, 2)
+
+    def ledger(route: str, model: str, status: str, cache_hit: bool, tokens: int, cost: float,
+               key_source: str = None, latency: float = None) -> None:
+        usage_ledger.record(
+            route=route,
+            model=model,
+            status=status,
+            cache_hit=cache_hit,
+            tokens_used=tokens,
+            latency_ms=elapsed_ms() if latency is None else latency,
+            estimated_cost_usd=cost,
+            key_source=key_source,
+        )
 
     # Step 1: Semantic cache check
     cached_result = await cache_service.get(req.prompt)
@@ -40,6 +59,7 @@ async def process_gateway_request(req: GatewayRequest) -> StructuredPulseRespons
                 "model": cache_metadata.get("model"),
             },
         )
+        ledger("memory_vault", cache_metadata.get("model", "semantic-cache"), "cached", True, 0, 0.0)
         return StructuredPulseResponse(
             query=req.prompt,
             response=cached_result["response"],
@@ -77,6 +97,7 @@ async def process_gateway_request(req: GatewayRequest) -> StructuredPulseRespons
         completion = await provider_manager.execute_completion(
             model=target_model,
             messages=[{"role": "user", "content": req.prompt}],
+            byok=req.byok,
         )
     except Exception as exc:
         await emit(
@@ -85,6 +106,7 @@ async def process_gateway_request(req: GatewayRequest) -> StructuredPulseRespons
             "warden_tower",
             {"model": target_model, "error": str(exc)},
         )
+        ledger(destination, target_model, "error", False, 0, 0.0)
         raise
 
     # Step 4: Evaluation
@@ -121,13 +143,25 @@ async def process_gateway_request(req: GatewayRequest) -> StructuredPulseRespons
         },
     )
 
+    estimated_cost = 0.0 if completion["status"] == "simulated" else route_decision["estimated_cost"]
+    ledger(
+        destination,
+        completion["model_used"],
+        completion["status"],
+        False,
+        completion["tokens_used"],
+        estimated_cost,
+        (completion.get("metadata") or {}).get("key_source"),
+        latency=latency_ms,
+    )
+
     return StructuredPulseResponse(
         query=req.prompt,
         response=completion["content"],
         destination=destination,
         model=completion["model_used"],
         latency_ms=latency_ms,
-        cost_usd=route_decision["estimated_cost"] if completion["status"] != "simulated" else 0.0,
+        cost_usd=estimated_cost,
         cache_hit=False,
         status=completion["status"],
         provider_used=completion["provider"],

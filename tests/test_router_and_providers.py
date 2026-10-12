@@ -112,14 +112,14 @@ def test_provider_stand_in_is_labelled():
     async def no_ollama(messages, model_name):
         return None
 
-    async def no_deepseek(messages, model_name=None):
+    async def no_deepseek(messages, model_name=None, byok=None):
         return None
 
     original_litellm_flag = providers_module.LITELLM_AVAILABLE
     providers_module.LITELLM_AVAILABLE = False
     manager._call_ollama_direct = no_ollama
     manager._call_deepseek_direct = no_deepseek
-    manager.get_gemini_key = lambda: None
+    manager.get_gemini_key = lambda byok=None: None
 
     try:
         result = asyncio.run(
@@ -147,12 +147,12 @@ def test_provider_gemini_is_reported_as_cloud():
     async def no_ollama(messages, model_name):
         return None
 
-    async def fake_gemini(messages, model_name):
+    async def fake_gemini(messages, model_name, byok=None):
         return {"content": "from gemini", "tokens": 7, "model": f"gemini/{model_name}"}
 
     manager._call_ollama_direct = no_ollama
     manager._call_gemini_direct = fake_gemini
-    manager.get_gemini_key = lambda: "test-key"
+    manager.get_gemini_key = lambda byok=None: "test-key"
 
     result = asyncio.run(
         manager.execute_completion(model="ollama/qwen3.5:4b", messages=[{"role": "user", "content": "hi"}])
