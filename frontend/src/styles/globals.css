@@ -6,12 +6,22 @@ html,
 body {
   padding: 0;
   margin: 0;
-  background-color: #0a0d14;
-  color: #ffffff;
-  overflow: hidden;
-  font-family: "Courier New", Courier, monospace;
+  background-color: #f8fafd;
+  color: #1e293b;
+}
+
+body {
+  font-family: 'Inter', system-ui, sans-serif;
 }
 
 * {
   box-sizing: border-box;
+}
+
+/* Retro pixel look: the world canvas upscales with nearest-neighbour sampling. */
+.pixel-art {
+  image-rendering: -moz-crisp-edges;
+  image-rendering: -webkit-crisp-edges;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
 }
