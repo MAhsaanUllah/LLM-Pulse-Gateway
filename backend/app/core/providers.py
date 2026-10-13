@@ -389,6 +389,7 @@ class ProviderManager:
         model: str,
         messages: List[Dict[str, str]],
         byok: Optional[BYOKCredentials] = None,
+        local_only: bool = False,
     ):
         """Yield `{'kind': 'delta', 'text': ...}` pieces, then one
         `{'kind': 'final', ...}` record shaped like execute_completion's.
@@ -433,15 +434,51 @@ class ProviderManager:
                 }
                 return
 
-        result = await self.execute_completion(model=model, messages=messages, byok=byok)
+        result = await self.execute_completion(model=model, messages=messages, byok=byok, local_only=local_only)
         yield {"kind": "delta", "text": result["content"]}
         yield {"kind": "final", **result}
+
+    def _simulate(
+        self,
+        model: str,
+        user_prompt: str,
+        attempted: List[Dict[str, str]],
+        fallback_triggered: bool,
+    ) -> Dict[str, Any]:
+        """The labelled stand-in: provenance instead of a 500 when no tier answers."""
+        logger.info("[ProviderManager] Engaging resilient gateway simulation engine.")
+        cascade = "; ".join(f"{a['tier']} -> {a['outcome']}" for a in attempted) or "no tier was reachable"
+        # The prompt can be a pasted file or retrieved document chunks: echo the opening
+        # lines so the caller recognises the request, never the whole thing.
+        echoed = user_prompt if len(user_prompt) <= 240 else f"{user_prompt[:240].rstrip()}…"
+        simulated_response = (
+            f"⚠️ [LLM Pulse Gateway — SIMULATED: no model answered]\n\n"
+            f"Your prompt: {echoed}\n\n"
+            f"Cascade: {cascade}\n\n"
+            f"Start Ollama (`ollama serve`), send `byok` with the request, or set a host key in `.env`: "
+            f"GEMINI_API_KEY, DEEPSEEK_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, GROQ_API_KEY, "
+            f"XAI_API_KEY or OPENROUTER_API_KEY."
+        )
+        return {
+            "content": simulated_response,
+            "model_used": f"{model} (stand-in)",
+            "provider": "none",
+            "status": "simulated",
+            "fallback_triggered": fallback_triggered,
+            "tokens_used": 0,
+            "metadata": {
+                "source": "stand_in",
+                "attempted": attempted,
+                "recommended_action": "start_ollama_or_set_api_key",
+            },
+        }
 
     async def execute_completion(
         self,
         model: str,
         messages: List[Dict[str, str]],
         byok: Optional[BYOKCredentials] = None,
+        local_only: bool = False,
     ) -> Dict[str, Any]:
         """
         Runs the cascade in the class docstring and returns the first tier that
@@ -474,6 +511,13 @@ class ProviderManager:
                 f"[ProviderManager] Local Ollama did not answer on {self.ollama_base_url}. "
                 "Triggering automated fallback to Gemini / Cloud Fortress..."
             )
+
+        if local_only:
+            # Retrieved document chunks ride in these messages. The privacy gate
+            # forbids handing them to a cloud provider as a "fallback", so the
+            # labelled stand-in answers instead.
+            attempted.append({"tier": "cloud", "outcome": "skipped: privacy gate keeps document context local"})
+            return self._simulate(model, user_prompt, attempted, is_local_target)
 
         # -------------------------------------------------------------
         # 2. ATTEMPT GEMINI (FAST & COST-EFFECTIVE CLOUD ALTERNATIVE)
@@ -584,30 +628,7 @@ class ProviderManager:
         # -------------------------------------------------------------
         # 5. ZERO-CRASH RESILIENT SIMULATION ENGINE
         # -------------------------------------------------------------
-        logger.info("[ProviderManager] Engaging resilient gateway simulation engine.")
-        cascade = "; ".join(f"{a['tier']} -> {a['outcome']}" for a in attempted) or "no tier was reachable"
-        simulated_response = (
-            f"⚠️ [LLM Pulse Gateway — SIMULATED: no model answered]\n\n"
-            f"Your prompt: {user_prompt}\n\n"
-            f"Cascade: {cascade}\n\n"
-            f"Start Ollama (`ollama serve`), send `byok` with the request, or set a host key in `.env`: "
-            f"GEMINI_API_KEY, DEEPSEEK_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, GROQ_API_KEY, "
-            f"XAI_API_KEY or OPENROUTER_API_KEY."
-        )
-
-        return {
-            "content": simulated_response,
-            "model_used": f"{model} (stand-in)",
-            "provider": "none",
-            "status": "simulated",
-            "fallback_triggered": is_local_target,
-            "tokens_used": 0,
-            "metadata": {
-                "source": "stand_in",
-                "attempted": attempted,
-                "recommended_action": "start_ollama_or_set_api_key",
-            },
-        }
+        return self._simulate(model, user_prompt, attempted, is_local_target)
 
 
 provider_manager = ProviderManager()

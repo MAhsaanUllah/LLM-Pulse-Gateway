@@ -71,12 +71,15 @@ def test_a_client_that_overruns_the_window_is_told_to_wait(monkeypatch):
 
 
 def test_the_rate_limit_is_per_client_not_global(monkeypatch):
+    """One caller overrunning its window must not mute the next one: the window is
+    keyed by client address. Asserted on the limiter itself because the TestClient
+    cannot fake a second client address (starlette dropped that argument)."""
     monkeypatch.setattr(settings, "RATE_LIMIT_PER_MINUTE", 1)
-    client = TestClient(main.app)
-    other = TestClient(main.app, client=("10.0.0.9", 0))
-    assert client.get("/api/gateway/usage").status_code == 200
-    assert other.get("/api/gateway/usage").status_code == 200
-    assert client.get("/api/gateway/usage").status_code == 429
+    limiter = guard_module.RateLimiter()
+    assert limiter.retry_after("127.0.0.1", now=0.0) is None
+    assert limiter.retry_after("10.0.0.9", now=0.0) is None
+    wait = limiter.retry_after("127.0.0.1", now=0.0)
+    assert wait is not None and wait > 0
     print("[PASS] test_the_rate_limit_is_per_client_not_global")
 
 

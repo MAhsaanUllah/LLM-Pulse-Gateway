@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Literal, Optional, List, Dict, Any
 
 from app.core.credentials import BYOKCredentials
@@ -43,6 +43,10 @@ class StructuredPulseResponse(BaseModel):
     truncated: bool = Field(
         default=False, description="True when the answer hit the generated-token budget and was cut off"
     )
+    rag_used: bool = Field(
+        default=False, description="True when retrieved knowledge-base chunks were attached to the prompt"
+    )
+    rag_chunks: int = Field(default=0, description="How many knowledge-base chunks were retrieved")
     signals: List[Dict[str, Any]] = []
 
 
@@ -88,3 +92,26 @@ class ModelsResponse(BaseModel):
 class CacheClearResponse(BaseModel):
     status: Literal["cleared"] = "cleared"
     cache_backend: str
+
+
+class KnowledgeStoreRequest(BaseModel):
+    text: str = Field(..., description="Document text to chunk and embed into the local knowledge base")
+    source: str = Field(default="pasted", description="Label shown in provenance, e.g. a file or handbook name")
+
+    @field_validator("text")
+    @classmethod
+    def text_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("text must not be blank")
+        return value
+
+
+class KnowledgeStoreResponse(BaseModel):
+    status: Literal["stored"] = "stored"
+    chunks_stored: int
+    knowledge_backend: str
+
+
+class KnowledgeClearResponse(BaseModel):
+    status: Literal["cleared"] = "cleared"
+    knowledge_backend: str

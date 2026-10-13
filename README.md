@@ -18,6 +18,7 @@ pretending a model replied.
 |---|---|---|
 | Prompt already asked (semantically) | served from the vector cache | 0 model tokens |
 | Simple / short prompt | local Ollama model | nothing (your GPU) |
+| Question about a stored document | local model, prompted with the retrieved chunks | nothing, and the document never leaves the machine |
 | Complex prompt or `premium` tier | cloud tier | whoever's key is used |
 | Caller supplied `byok` | cloud tier bills **the caller**, not you | their quota |
 | Nothing reachable | answer labelled `simulated` | nothing |
@@ -47,6 +48,11 @@ aspirational; see [Measured behaviour](#measured-behaviour).
  └──────┬───────┘                  │
         │ local                    │ cloud
         ▼                          ▼
+ ┌──────────────┐
+ │ Knowledge    │  top-2 chunks, cosine ≥ 0.35
+ │ Base (RAG)   │  private documents: local routes only
+ └──────┬───────┘  unless RAG_ALLOW_CLOUD
+        ▼
  ┌──────────────┐        ┌────────────────────────────────────┐
  │ Model        │        │ Provider cascade                   │
  │ Fortress     │        │ 1. Ollama /api/chat (local, capped)│
@@ -66,23 +72,28 @@ aspirational; see [Measured behaviour](#measured-behaviour).
           └────────────────────┘
 ```
 
-Storage: **Qdrant** for the vector index when reachable; otherwise the same cosine
-index runs in-process and writes itself to `CACHE_FILE_PATH`
-(`data/semantic_cache.json`) on every save, so cached answers survive a restart
-without Docker.
+Storage: **Qdrant** for the vector indexes when reachable (two collections,
+`semantic_cache` and `knowledge_base`); otherwise the same cosine index runs in-process
+and writes itself to `CACHE_FILE_PATH` (`data/semantic_cache.json`) and
+`KNOWLEDGE_FILE_PATH` (`data/knowledge_base.json`) on every save, so cached answers and
+stored documents survive a restart without Docker. `QDRANT_HOST` defaults to `127.0.0.1`,
+not `localhost`: compose publishes IPv4 only, and on Windows `localhost` resolves to
+`::1` first, which reads as a connection refused.
 
 ---
 
 ## Request lifecycle
 
-`backend/app/api/gateway.py` runs five steps, broadcasting a `SignalPacket` between each:
+`backend/app/api/gateway.py` runs six steps, broadcasting a `SignalPacket` between each:
 
 1. `CACHE_MISS` / `CACHE_HIT`: semantic lookup
 2. `ROUTING_SIGNAL`: chosen destination, model, estimated cost, reason, and the
    complexity breakdown (score, word count, heuristic hits) behind that reason
-3. `MODEL_EXECUTION`: cascade attempt
-4. `EVALUATION`: pass/fail on the two observable checks
-5. `COMPLETION`: latency, model, tokens, status, `truncated`
+3. knowledge retrieval: the closest chunks from the local knowledge base, if any
+   apply to this route (see [Local knowledge base](#local-knowledge-base-rag))
+4. `MODEL_EXECUTION`: cascade attempt
+5. `EVALUATION`: pass/fail on the two observable checks
+6. `COMPLETION`: latency, model, tokens, status, `truncated`
 
 Every step is also returned inline in the response `signals` array, so a client can
 replay a request's path without subscribing to the socket. `POST /api/gateway/chat/stream`
@@ -160,6 +171,8 @@ complete reply, and a stream cut off by the token budget is flagged and never ca
   "cost_usd": 0.0,
   "key_source": null,
   "truncated": true,
+  "rag_used": true,
+  "rag_chunks": 2,
   "signals": [ ... ]
 }
 ```
@@ -167,6 +180,8 @@ complete reply, and a stream cut off by the token budget is flagged and never ca
 `status` is one of `success`, `cached`, `fallback`, `simulated`, and `attempted`
 inside `metadata` records every tier the cascade tried and why each one did not
 answer (`skipped: no Gemini key (BYOK or .env)`, `HTTP 401`, `TimeoutException`, ...).
+`rag_used` and `rag_chunks` say whether the answer was grounded in the local
+knowledge base and how many chunks were retrieved.
 
 **`key_source` says whose credential the tier that answered used**: `"byok"` when the
 caller's request body carried the key, `"operator"` when the host's `.env`/environment
@@ -286,6 +301,55 @@ rest of the API.
 
 ---
 
+## Local knowledge base (RAG)
+
+Paste a document and the gateway chunks it, embeds it, and stores it in its own index.
+On later questions it retrieves the closest chunks and puts them in front of the prompt,
+so a 2B local model answers from the handbook instead of from its weights.
+
+```bash
+curl -X POST http://localhost:8000/api/gateway/documents \
+  -H "Content-Type: application/json" \
+  -d '{ "text": "The pulse handbook secret codeword is aurora-7.", "source": "handbook" }'
+# { "status": "stored", "chunks_stored": 1, "knowledge_backend": "qdrant:knowledge_base" }
+
+curl -X POST http://localhost:8000/api/gateway/chat \
+  -H "Content-Type: application/json" \
+  -d '{ "prompt": "what is the secret codeword in the pulse handbook" }'
+# "destination": "local_slm", "rag_used": true, "rag_chunks": 1, ...
+```
+
+| Setting | Default | Effect |
+|---|---|---|
+| `KNOWLEDGE_CHUNK_WORDS` | 120 | words per chunk; paragraph boundaries first, then a hard split |
+| `RAG_TOP_K` | 2 | chunks attached per question |
+| `RAG_MIN_SIMILARITY` | 0.35 | loose on purpose: a question rarely embeds close to its answer paragraph |
+| `RAG_ALLOW_CLOUD` | `false` | the only way retrieved text may leave the machine |
+
+Storage and the embedder are the cache's: `knowledge_base` collection in Qdrant when it
+answers, `data/knowledge_base.json` when it does not, and `nomic-embed-text` for the
+vectors. No new dependency and no second model. Re-adding the same `source` and chunk
+text updates that point instead of duplicating it. In the UI the paperclip under the chat
+box adds a text or markdown file in one click: the browser reads the file and posts its
+text to the same route, so there is no upload endpoint and no parser to install. The
+manual paste box, the Clear button and the "Grounded in N doc chunks" chip sit next to it.
+
+**The privacy gate.** Retrieved chunks are the caller's own documents, so they ride local
+routes only, and the gate is enforced twice on purpose:
+
+- at route time: a prompt the router sends to a cloud tier retrieves nothing and is
+  forwarded as the plain question, so "premium" never quietly uploads a handbook
+- at execution time: a local route that cannot answer (Ollama down, model out of memory)
+  is refused its cloud fallback and gets the labelled `simulated` stand-in instead. The
+  first gate cannot see an outage; only the second one can.
+
+Set `RAG_ALLOW_CLOUD=true` to opt in to cloud grounding.
+
+An empty store never reaches the embedder (`count() == 0` short-circuits retrieval), so a
+gateway with no documents behaves exactly the way it did before this feature existed.
+
+---
+
 ## Setup
 
 Requirements: Python 3.11+, Node 18+, and optionally Docker and Ollama.
@@ -357,8 +421,9 @@ python -m pytest
 
 The suite is hermetic by construction (`tests/conftest.py`): every cloud credential
 variable is unset, the LiteLLM tier is forced unavailable, the ledger and the fallback
-cache file are pointed at a temporary directory, and the gates are opened so no test
-needs a token. 79 tests, no network calls.
+cache and knowledge files are pointed at a temporary directory, the cache and knowledge
+services are replaced with in-process indexes so no test touches a live Ollama or Qdrant,
+and the gates are opened so no test needs a token. 94 tests, no network calls.
 
 ## Endpoints
 
@@ -370,6 +435,8 @@ needs a token. 79 tests, no network calls.
 | `GET` | `/api/gateway/models` | local models pulled + per-provider host key status |
 | `GET` | `/api/gateway/metrics` | the ledger as Prometheus gauges (scraped by the compose stack) |
 | `POST` | `/api/gateway/cache/clear` | drop every cached answer |
+| `POST` | `/api/gateway/documents` | chunk, embed and store a document in the knowledge base |
+| `POST` | `/api/gateway/documents/clear` | drop every stored document chunk |
 | `WS` | `/ws/signals` | live routing events for the canvas |
 | `GET` | `/health` | liveness |
 
@@ -427,6 +494,14 @@ prompt `cached` with 0 tokens in 2.4 s, and `POST /api/gateway/cache/clear` repo
 `qdrant:semantic_cache` and left the collection gone until the next stored answer.
 Whichever backend is live is the one the response tells you about.
 
+RAG grounding, measured on the local tier (`gemma2:2b`, Qdrant running). One document
+stored: `"The pulse handbook secret codeword is aurora-7."`. A question that document
+cannot answer from its own weights, `"what is the secret codeword in the pulse handbook"`,
+came back `status: "success"`, `rag_used: true`, `rag_chunks: 1`, `destination:
+"local_slm"`, 247 tokens, 0 cost, with the answer quoting **aurora-7**. Removing the
+privacy gate's guard while Ollama was out of memory had sent that same retrieved chunk to
+the cloud fallback, which is the bug the execution-level gate exists to prevent.
+
 Gates, measured on a second process with `GATEWAY_TOKEN` and `RATE_LIMIT_PER_MINUTE=3`:
 no header `401`, wrong scheme `401`, exact bearer `200`, fourth call in the minute
 `429` with `retry-after: 59.0`.
@@ -465,6 +540,13 @@ Stated rather than hidden:
 - **Cost is an estimate** (router-side), tokens are real (provider-reported).
   `estimated_cost_usd` for local and simulated routes is `0.0` because nothing was
   billed, not because a price was computed.
+- **RAG is one-hop retrieval, no reranking.** The top 2 chunks above a loose 0.35
+  similarity are pasted in as-is: a question that needs three separate paragraphs, or a
+  chunk whose answer is worded very differently from the stored text, can miss. A model
+  ranked reranker is the upgrade, and it costs a second loaded model.
+- **A grounded answer is cached under the raw prompt.** The cache does not know the
+  knowledge base existed, so editing or clearing documents does not invalidate answers
+  they produced: run `POST /api/gateway/cache/clear` after changing the store.
 - The UI's **"Your key" chip only appears when the caller's own key answered**, which
   needs a key pasted under API keys & settings. Without one, an answer is honest about
   being routed locally or on the host key.
@@ -476,12 +558,13 @@ backend/
   config.py                  pydantic-settings; all knobs come from .env
   main.py                    app, CORS, routers, /health
   app/
-    api/gateway.py           the 5-step request pipeline, block + streaming routes
+    api/gateway.py           the 6-step request pipeline, block + streaming routes
     api/websocket.py         SignalPacket broadcast (/ws/signals)
     core/guard.py            bearer token + per-client rate window
     core/router.py           SmartRouter heuristics + cost estimate
     core/providers.py        cascade, BYOK resolution, redaction, provenance
     core/cache.py            semantic cache: Qdrant, or a file-backed local index
+    core/knowledge.py        RAG store: chunking, embedding, retrieval
     core/credentials.py      BYOKCredentials
     core/usage.py            SQLite ledger
     features/parser.py       request/response models
@@ -491,7 +574,7 @@ frontend/
   src/components/pulse/      Canvas 2D pixel world driven by WS signals
   src/lib/pulse/gateway.js   endpoints, SSE parsing, and formatting single source
 tests/                       hermetic suite (see conftest.py)
-scripts/demo.sh              the five-minute proof: miss, hit, cloud route, ledger
+scripts/demo.sh              the five-minute proof: miss, hit, grounded doc, cloud route, ledger
 scripts/blender/             sprite/asset generators for the canvas
 Dockerfile                   the backend as a container (compose: gateway)
 docker-compose.yml           qdrant, gateway(:8010), caddy TLS(:8443), prometheus(:9090)

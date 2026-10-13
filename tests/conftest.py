@@ -9,6 +9,8 @@ if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
 import app.core.providers as providers_module
+from app.core.cache import InMemoryIndex
+from app.core.knowledge import KnowledgeStore
 from app.core.usage import UsageLedger
 from config import settings
 
@@ -41,6 +43,19 @@ def cache_file_stays_in_tmp(tmp_path, monkeypatch):
     """The durable index writes real JSON. Left alone, a test run would edit the
     operator's own cache file and each test would inherit the last one's answers."""
     monkeypatch.setattr(settings, "CACHE_FILE_PATH", str(tmp_path / "semantic_cache.json"), raising=False)
+
+
+@pytest.fixture(autouse=True)
+def knowledge_store_stays_in_tmp(tmp_path, monkeypatch):
+    """The knowledge base persists like the cache. Tests get an empty private store
+    whose file lands in tmp; the count()==0 guard means the real embedder is never
+    reached (it would call the host Ollama)."""
+    path = str(tmp_path / "knowledge_base.json")
+    monkeypatch.setattr(settings, "KNOWLEDGE_FILE_PATH", path, raising=False)
+    monkeypatch.setattr(
+        "app.api.gateway.knowledge_service",
+        KnowledgeStore(embedder=None, index_factory=lambda: InMemoryIndex(persist_path=path)),
+    )
 
 
 @pytest.fixture(autouse=True)

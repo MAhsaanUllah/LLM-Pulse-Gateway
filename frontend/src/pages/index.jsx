@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Head from 'next/head';
 import PulseWorld from '../components/pulse/PulseWorld';
-import { streamChat, fetchUsage, fetchModels, formatLatency, formatCost, signalsWsUrl, getGatewayToken, saveGatewayToken } from '../lib/pulse/gateway';
-import { Zap, Sparkles, Send, Loader2, Key, Trash2, RefreshCw, Settings, X, Activity } from 'lucide-react';
+import { streamChat, fetchUsage, fetchModels, storeDocument, clearKnowledge, formatLatency, formatCost, signalsWsUrl, getGatewayToken, saveGatewayToken } from '../lib/pulse/gateway';
+import { Zap, Sparkles, Send, Loader2, Key, Trash2, RefreshCw, Settings, X, Activity, BookOpen, Paperclip } from 'lucide-react';
 
 const BYOK_STORAGE_KEY = 'llm-pulse-byok';
 const EMPTY_BYOK = {
@@ -186,8 +186,9 @@ function MetricRow({ label, value, accent }) {
   );
 }
 
-// Chips under an assistant reply: how it was answered, whose key paid, whether it ran out of budget.
-function StatusChip({ status, provider, keySource, truncated }) {
+// Chips under an assistant reply: how it was answered, whose key paid, whether it ran
+// out of budget, and whether the answer was grounded in stored documents.
+function StatusChip({ status, provider, keySource, truncated, ragChunks }) {
   const map = {
     cached: { text: 'Answered from cache · 0 tokens', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
     simulated: { text: 'Simulated: no model answered', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
@@ -197,6 +198,12 @@ function StatusChip({ status, provider, keySource, truncated }) {
   if (map[status]) chips.push(map[status]);
   if (truncated) {
     chips.push({ text: 'Cut off by the token budget', cls: 'bg-amber-50 text-amber-700 border-amber-200' });
+  }
+  if (ragChunks > 0) {
+    chips.push({
+      text: `Grounded in ${ragChunks} doc chunk${ragChunks === 1 ? '' : 's'}`,
+      cls: 'bg-cyan-50 text-cyan-700 border-cyan-200',
+    });
   }
   if (keySource === 'byok') {
     chips.push({ text: 'Your key', cls: 'bg-blue-50 text-blue-700 border-blue-200' });
@@ -233,6 +240,10 @@ export default function Home() {
   const [showSettings, setShowSettings] = useState(false);
   const [localModels, setLocalModels] = useState(null);
   const [detecting, setDetecting] = useState(false);
+  const [kbText, setKbText] = useState('');
+  const [kbSource, setKbSource] = useState('');
+  const [kbBusy, setKbBusy] = useState(false);
+  const [kbStatus, setKbStatus] = useState(null);
   const [usage, setUsage] = useState(null);
   const [usageError, setUsageError] = useState(null);
   const [messages, setMessages] = useState([{ id: 0, role: 'assistant', text: GREETING }]);
@@ -254,6 +265,63 @@ export default function Home() {
       setLocalModels({ ollama_available: false, base_url: '', models: [], error: err.message });
     } finally {
       setDetecting(false);
+    }
+  };
+
+  // Documents are chunked and embedded server-side; the textarea is cleared on
+  // success so the operator sees the text left the box.
+  const addToKnowledge = async () => {
+    if (!kbText.trim() || kbBusy) return;
+    setKbBusy(true);
+    setKbStatus(null);
+    try {
+      const res = await storeDocument(kbText, kbSource);
+      setKbText('');
+      setKbStatus({ tone: 'ok', text: `Stored ${res.chunks_stored} chunk${res.chunks_stored === 1 ? '' : 's'} via ${res.knowledge_backend}.` });
+    } catch (err) {
+      setKbStatus({ tone: 'error', text: err.message });
+    } finally {
+      setKbBusy(false);
+    }
+  };
+
+  const clearKnowledgeBase = async () => {
+    if (kbBusy) return;
+    setKbBusy(true);
+    setKbStatus(null);
+    try {
+      const res = await clearKnowledge();
+      setKbStatus({ tone: 'ok', text: `Knowledge base cleared via ${res.knowledge_backend}.` });
+    } catch (err) {
+      setKbStatus({ tone: 'error', text: err.message });
+    } finally {
+      setKbBusy(false);
+    }
+  };
+
+  // The browser reads the file and posts its text to the same endpoint the modal
+  // uses, so there is no upload route and no parser to install.
+  const attachFile = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file || kbBusy) return;
+    setKbBusy(true);
+    setNotice(null);
+    try {
+      const text = await file.text();
+      if (!text.trim()) {
+        setNotice(`${file.name} has no text to store.`);
+      } else {
+        const res = await storeDocument(text, file.name);
+        setNotice(
+          `${file.name} is in the knowledge base (${res.chunks_stored} chunk${res.chunks_stored === 1 ? '' : 's'} via ${res.knowledge_backend}). ` +
+            'Ask about it and the local model gets those pages.'
+        );
+      }
+    } catch (err) {
+      setNotice(`Couldn't add ${file.name}: ${err.message}`);
+    } finally {
+      setKbBusy(false);
     }
   };
 
@@ -388,6 +456,7 @@ export default function Home() {
         provider: data.provider_used,
         keySource: data.key_source,
         truncated: data.truncated,
+        ragChunks: data.rag_chunks || 0,
       } : m)));
       setMetrics({
         model: data.model || '—',
@@ -406,6 +475,9 @@ export default function Home() {
         setBanner({ text: `Answered by the fallback tier (${data.provider_used})`, tone: 'warn' });
       } else {
         setBanner({ text: 'Request completed', tone: 'success' });
+        if (data.rag_chunks > 0) {
+          setNotice(`Grounded with ${data.rag_chunks} chunk${data.rag_chunks === 1 ? '' : 's'} from the knowledge base. Retrieved text stays on the local model unless the operator allows cloud.`);
+        }
       }
     } catch (err) {
       engineRef.current?.handleSignal({ event: 'ERROR', metadata: { error: String(err) } });
@@ -650,7 +722,7 @@ export default function Home() {
                   <div key={m.id} className="flex justify-start">
                     <div className={`max-w-[92%] border rounded-2xl rounded-bl-sm px-3.5 py-2.5 shadow-sm ${m.tone === 'error' ? 'bg-red-50 text-red-700 border-red-200 text-sm leading-relaxed whitespace-pre-wrap' : 'bg-white border-slate-200'}`}>
                       {m.id === 0 ? <TypewriterText text={m.text} /> : <Markdown text={m.text} />}
-                      <StatusChip status={m.status} provider={m.provider} keySource={m.keySource} truncated={m.truncated} />
+                      <StatusChip status={m.status} provider={m.provider} keySource={m.keySource} truncated={m.truncated} ragChunks={m.ragChunks} />
                     </div>
                   </div>
                 );
@@ -718,14 +790,30 @@ export default function Home() {
                     Premium
                   </button>
                 </div>
-                <button
-                  type="submit"
-                  disabled={isPending}
-                  className="inline-flex items-center justify-center gap-1.5 min-w-[88px] px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold text-xs shadow-sm hover:shadow-md active:scale-95 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
-                >
-                  {isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-                  <span>{isPending ? 'Routing…' : 'Send'}</span>
-                </button>
+                <div className="flex items-center gap-2">
+                  <label
+                    title="Add a text or markdown file to the knowledge base"
+                    className="inline-flex items-center justify-center w-9 h-9 rounded-lg border border-slate-200 bg-white text-slate-500 hover:text-slate-900 hover:border-slate-300 cursor-pointer transition focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-400"
+                  >
+                    <Paperclip className="w-4 h-4" />
+                    <span className="sr-only">Add a file to the knowledge base</span>
+                    <input
+                      type="file"
+                      accept=".txt,.md,.markdown,.json,.csv,.log,text/*"
+                      onChange={attachFile}
+                      disabled={kbBusy || isPending}
+                      className="sr-only"
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    disabled={isPending}
+                    className="inline-flex items-center justify-center gap-1.5 min-w-[88px] px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold text-xs shadow-sm hover:shadow-md active:scale-95 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+                  >
+                    {isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                    <span>{isPending ? 'Routing…' : 'Send'}</span>
+                  </button>
+                </div>
               </div>
             </form>
           </aside>
@@ -836,6 +924,61 @@ export default function Home() {
                       Ollama not detected{localModels.base_url ? ` at ${localModels.base_url}` : ''}.
                     </p>
                   )
+                )}
+              </div>
+
+              {/* Knowledge base (RAG) */}
+              <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+                <div className="flex items-center justify-between">
+                  <span className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-600">
+                    <BookOpen className="w-3.5 h-3.5 text-slate-400" />
+                    Knowledge base (RAG)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={clearKnowledgeBase}
+                    disabled={kbBusy}
+                    title="Forget every stored document"
+                    className="inline-flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded bg-white text-slate-500 border border-slate-200 hover:text-red-600 hover:border-red-200 font-medium transition disabled:opacity-50"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    Clear all
+                  </button>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Paste text the local model should know. Chunks are embedded and stored, then
+                  retrieved for matching questions. They stay on the local model; nothing is sent
+                  to cloud providers.
+                </p>
+                <textarea
+                  rows={3}
+                  value={kbText}
+                  onChange={(e) => setKbText(e.target.value)}
+                  placeholder="Paste a document, notes, or an FAQ here…"
+                  className="mt-2 w-full resize-none rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 placeholder-slate-400 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition"
+                />
+                <div className="mt-2 flex gap-2">
+                  <input
+                    type="text"
+                    value={kbSource}
+                    onChange={(e) => setKbSource(e.target.value)}
+                    placeholder="Source label (optional)"
+                    className="flex-1 min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 placeholder-slate-400 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition"
+                  />
+                  <button
+                    type="button"
+                    onClick={addToKnowledge}
+                    disabled={kbBusy || !kbText.trim()}
+                    className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold px-3 py-2 rounded-lg border border-blue-200 bg-blue-50 text-blue-700 hover:border-blue-300 hover:bg-blue-100 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {kbBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                    Store
+                  </button>
+                </div>
+                {kbStatus && (
+                  <p className={`mt-2 text-[11px] font-medium ${kbStatus.tone === 'ok' ? 'text-emerald-700' : 'text-red-600'}`}>
+                    {kbStatus.text}
+                  </p>
                 )}
               </div>
 

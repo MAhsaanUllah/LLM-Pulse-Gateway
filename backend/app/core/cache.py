@@ -53,6 +53,12 @@ class VectorIndex(Protocol):
 
     def search(self, vector: list[float], threshold: float) -> Optional[tuple[float, dict[str, Any]]]: ...
 
+    def search_many(
+        self, vector: list[float], limit: int, threshold: float
+    ) -> list[tuple[float, dict[str, Any]]]: ...
+
+    def count(self) -> int: ...
+
     def clear(self) -> None: ...
 
     def describe(self) -> str: ...
@@ -95,6 +101,22 @@ class QdrantIndex:
         if not result.points:
             return None
         return result.points[0].score, dict(result.points[0].payload or {})
+
+    def search_many(
+        self, vector: list[float], limit: int, threshold: float
+    ) -> list[tuple[float, dict[str, Any]]]:
+        self._ensure_collection(len(vector))
+        result = self.client.query_points(
+            collection_name=self.collection_name,
+            query=vector,
+            limit=limit,
+            score_threshold=threshold,
+            with_payload=True,
+        )
+        return [(point.score, dict(point.payload or {})) for point in result.points]
+
+    def count(self) -> int:
+        return self.client.count(collection_name=self.collection_name, exact=True).count
 
     def clear(self) -> None:
         self.client.delete_collection(self.collection_name)
@@ -168,6 +190,20 @@ class InMemoryIndex:
             if score >= threshold and (best is None or score > best[0]):
                 best = (score, payload)
         return best
+
+    def search_many(
+        self, vector: list[float], limit: int, threshold: float
+    ) -> list[tuple[float, dict[str, Any]]]:
+        scored = [
+            (self._cosine(vector, stored_vector), payload)
+            for stored_vector, payload in self._entries.values()
+        ]
+        hits = [pair for pair in scored if pair[0] >= threshold]
+        hits.sort(key=lambda pair: pair[0], reverse=True)
+        return hits[:limit]
+
+    def count(self) -> int:
+        return len(self._entries)
 
     def clear(self) -> None:
         self._entries = {}

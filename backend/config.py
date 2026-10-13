@@ -10,8 +10,9 @@ class Settings(BaseSettings):
     PORT: int = 8000
     CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001"
 
-    # Qdrant Vector Store Configuration
-    QDRANT_HOST: str = "localhost"
+    # Qdrant Vector Store Configuration. 127.0.0.1, not "localhost": Docker publishes
+    # IPv4 only, and on Windows "localhost" resolves to ::1 first, which refuses.
+    QDRANT_HOST: str = "127.0.0.1"
     QDRANT_PORT: int = 6333
 
     # Semantic Cache / Embeddings (served by Ollama, vector width comes from the model)
@@ -48,6 +49,17 @@ class Settings(BaseSettings):
     CACHE_TTL_SECONDS: int = 86400
     # Without Qdrant the index lives in this file, so a restart keeps its answers.
     CACHE_FILE_PATH: str = "data/semantic_cache.json"
+
+    # Local knowledge base (RAG). Same embedder as the cache, own collection/file.
+    # Retrieved chunks are the caller's private documents, so they ride local routes
+    # only; flipping RAG_ALLOW_CLOUD sends them to cloud models too.
+    KNOWLEDGE_COLLECTION: str = "knowledge_base"
+    KNOWLEDGE_FILE_PATH: str = "data/knowledge_base.json"
+    KNOWLEDGE_CHUNK_WORDS: int = 120
+    RAG_TOP_K: int = 2
+    # Loose on purpose: a question rarely embeds close to its answer paragraph.
+    RAG_MIN_SIMILARITY: float = 0.35
+    RAG_ALLOW_CLOUD: bool = False
 
     # Cloud LLM API Keys
     OPENAI_API_KEY: Optional[str] = None

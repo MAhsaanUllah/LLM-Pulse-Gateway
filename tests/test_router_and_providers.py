@@ -461,6 +461,82 @@ def test_models_endpoint_serves_the_catalog_and_host_key_status(monkeypatch):
     print("[PASS] test_models_endpoint_serves_the_catalog_and_host_key_status")
 
 
+def _gate_manager(calls):
+    """A manager whose local tier is down but whose cloud tiers have keys, so any
+    fallback attempt is observable."""
+    manager = ProviderManager()
+
+    async def local_silent(messages, model):
+        return None
+
+    async def fake_gemini(messages, model, byok=None):
+        calls["gemini"] += 1
+        return {"content": "cloud answer", "model": "gemini-x", "tokens": 1}
+
+    async def fake_deepseek(messages, byok=None):
+        calls["deepseek"] += 1
+        return {"content": "cloud answer", "model": "deepseek-chat", "tokens": 1}
+
+    manager._call_ollama_direct = local_silent
+    manager.get_gemini_key = lambda byok=None: "fake-key"
+    manager._call_gemini_direct = fake_gemini
+    manager.get_deepseek_key = lambda byok=None: "fake-key"
+    manager._call_deepseek_direct = fake_deepseek
+    return manager
+
+
+def test_local_only_keeps_document_context_off_cloud_tiers(monkeypatch):
+    """When retrieved chunks ride in the messages and the local model is down, the
+    answer must be the labelled stand-in, never a cloud fallback with the documents."""
+    monkeypatch.setattr(providers_module, "LITELLM_AVAILABLE", False)
+    calls = {"gemini": 0, "deepseek": 0}
+    manager = _gate_manager(calls)
+
+    messages = [{"role": "user", "content": "Context: private handbook text\n\nQuestion: hi"}]
+    result = asyncio.run(manager.execute_completion("ollama/gemma4:e2b", messages, local_only=True))
+
+    assert result["status"] == "simulated"
+    assert calls == {"gemini": 0, "deepseek": 0}
+    assert any(a["tier"] == "cloud" and a["outcome"].startswith("skipped") for a in result["metadata"]["attempted"])
+
+
+def test_without_local_only_the_cascade_still_falls_back_to_cloud(monkeypatch):
+    """The privacy flag must be the only thing that blocks the fallback: plain
+    local failures keep reaching cloud tiers as before."""
+    monkeypatch.setattr(providers_module, "LITELLM_AVAILABLE", False)
+    calls = {"gemini": 0, "deepseek": 0}
+    manager = _gate_manager(calls)
+
+    result = asyncio.run(manager.execute_completion("ollama/gemma4:e2b", [{"role": "user", "content": "hi"}]))
+
+    assert result["status"] == "fallback"
+    assert result["provider"] == "cloud_fortress"
+    assert calls["gemini"] == 1
+
+
+def test_the_stand_in_does_not_echo_the_whole_prompt(monkeypatch):
+    """A pasted file or a retrieved document lives in the prompt, and the stand-in
+    used to repeat all of it back into the chat bubble and the SSE stream."""
+    monkeypatch.setattr(providers_module, "LITELLM_AVAILABLE", False)
+    manager = ProviderManager()
+
+    async def local_silent(messages, model):
+        return None
+
+    manager._call_ollama_direct = local_silent
+    manager.get_gemini_key = lambda byok=None: None
+    manager.get_deepseek_key = lambda byok=None: None
+
+    long_prompt = "handbook page text " * 400
+    result = asyncio.run(manager.execute_completion("ollama/gemma4:e2b", [{"role": "user", "content": long_prompt}]))
+
+    assert result["status"] == "simulated"
+    assert "…" in result["content"]
+    # A 7200-char prompt must not become a 7200-char bubble: the stand-in stays
+    # roughly the size of its own explanation, whatever the caller pasted.
+    assert len(result["content"]) < len(long_prompt) / 4
+
+
 if __name__ == "__main__":
     test_smart_router_easy_queries()
     test_smart_router_hard_queries()

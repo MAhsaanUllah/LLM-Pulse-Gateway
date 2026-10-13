@@ -3,6 +3,7 @@ export const API_BASE = 'http://localhost:8000';
 export const USAGE_URL = `${API_BASE}/api/gateway/usage`;
 export const MODELS_URL = `${API_BASE}/api/gateway/models`;
 export const STREAM_URL = `${API_BASE}/api/gateway/chat/stream`;
+export const DOCUMENTS_URL = `${API_BASE}/api/gateway/documents`;
 export const SIGNALS_WS_URL = `ws://localhost:8000/ws/signals`;
 
 const TOKEN_STORAGE_KEY = 'llm-pulse-gateway-token';
@@ -90,6 +91,29 @@ export async function fetchModels() {
   const res = await fetch(MODELS_URL, { headers: authHeaders() });
   if (!res.ok) {
     throw new Error(gatewayError('Models', res.status));
+  }
+  return res.json();
+}
+
+export async function storeDocument(text, source) {
+  const res = await fetch(DOCUMENTS_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ text, source: source || 'pasted' }),
+  });
+  if (!res.ok) {
+    throw new Error(gatewayError('Knowledge base', res.status));
+  }
+  return res.json();
+}
+
+export async function clearKnowledge() {
+  const res = await fetch(`${DOCUMENTS_URL}/clear`, {
+    method: 'POST',
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    throw new Error(gatewayError('Knowledge base', res.status));
   }
   return res.json();
 }

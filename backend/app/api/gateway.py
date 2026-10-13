@@ -7,6 +7,7 @@ from typing import List, Optional
 from app.api.websocket import SignalEvent, SignalPacket, stream_manager
 from app.core.cache import cache_service
 from app.core.guard import authorize_request
+from app.core.knowledge import knowledge_service
 from app.core.providers import provider_manager
 from app.core.router import smart_router
 from app.core.usage import usage_ledger
@@ -14,11 +15,15 @@ from app.features.evals import eval_engine
 from app.features.parser import (
     CacheClearResponse,
     GatewayRequest,
+    KnowledgeClearResponse,
+    KnowledgeStoreRequest,
+    KnowledgeStoreResponse,
     MAX_HISTORY_TURNS,
     ModelsResponse,
     StructuredPulseResponse,
     UsageSummaryResponse,
 )
+from config import settings
 
 router = APIRouter(dependencies=[Depends(authorize_request)])
 
@@ -33,6 +38,25 @@ ANSWER_STYLE = (
     "lists, no asterisks, no em dashes. Write two or three short paragraphs, at most "
     "120 words, and finish your answer."
 )
+
+
+async def rag_context(prompt: str, destination: str) -> tuple[str, int]:
+    """Retrieve knowledge chunks for a prompt, or nothing when gated.
+
+    Retrieved chunks are the caller's own documents, so they ride local routes only;
+    the operator's RAG_ALLOW_CLOUD flag is the one way they may reach a cloud model.
+    """
+    if destination != "local_slm" and not settings.RAG_ALLOW_CLOUD:
+        return "", 0
+    chunks = await knowledge_service.search(prompt)
+    if not chunks:
+        return "", 0
+    context = (
+        "Use the context below to answer.\n\nContext:\n"
+        + "\n\n".join(chunks)
+        + f"\n\nQuestion: {prompt}"
+    )
+    return context, len(chunks)
 
 
 @router.get("/gateway/models", response_model=ModelsResponse)
@@ -79,6 +103,19 @@ async def get_prometheus_metrics() -> StreamingResponse:
 async def clear_semantic_cache() -> CacheClearResponse:
     """Drop every stored answer so the next prompt is genuinely re-asked."""
     return CacheClearResponse(cache_backend=await cache_service.clear())
+
+
+@router.post("/gateway/documents", response_model=KnowledgeStoreResponse)
+async def store_knowledge_document(req: KnowledgeStoreRequest) -> KnowledgeStoreResponse:
+    """Chunk and embed a document into the local knowledge base for retrieval."""
+    chunks_stored = await knowledge_service.add_document(req.text, source=req.source)
+    return KnowledgeStoreResponse(chunks_stored=chunks_stored, knowledge_backend=knowledge_service.describe())
+
+
+@router.post("/gateway/documents/clear", response_model=KnowledgeClearResponse)
+async def clear_knowledge_base() -> KnowledgeClearResponse:
+    """Forget every stored document. Separate from the chat cache on purpose."""
+    return KnowledgeClearResponse(knowledge_backend=await knowledge_service.clear())
 
 
 @router.post("/gateway/chat", response_model=StructuredPulseResponse)
@@ -161,7 +198,13 @@ async def process_gateway_request(req: GatewayRequest) -> StructuredPulseRespons
         },
     )
 
-    # Step 3: Model execution
+    # Step 3: Knowledge retrieval. Local routes only: chunks are private documents.
+    rag_prefix, rag_chunks = await rag_context(req.prompt, destination)
+    # With chunks attached and no allow-cloud flag, a local outage must NOT send the
+    # caller's documents to a cloud fallback; the stand-in answers instead.
+    local_only = bool(rag_prefix) and not settings.RAG_ALLOW_CLOUD
+
+    # Step 4: Model execution
     try:
         await emit(SignalEvent.MODEL_EXECUTION, destination, destination, {"model": target_model})
         completion = await provider_manager.execute_completion(
@@ -169,9 +212,10 @@ async def process_gateway_request(req: GatewayRequest) -> StructuredPulseRespons
             messages=[
                 {"role": "system", "content": ANSWER_STYLE},
                 *(turn.model_dump() for turn in history),
-                {"role": "user", "content": req.prompt},
+                {"role": "user", "content": rag_prefix or req.prompt},
             ],
             byok=req.byok,
+            local_only=local_only,
         )
     except Exception as exc:
         await emit(
@@ -183,7 +227,7 @@ async def process_gateway_request(req: GatewayRequest) -> StructuredPulseRespons
         ledger(destination, target_model, "error", False, 0, 0.0)
         raise
 
-    # Step 4: Evaluation
+    # Step 5: Evaluation
     eval_result = await eval_engine.evaluate(completion["content"], completion["status"])
     await emit(
         SignalEvent.EVALUATION,
@@ -192,7 +236,7 @@ async def process_gateway_request(req: GatewayRequest) -> StructuredPulseRespons
         {"passed": eval_result["passed"], "checks": eval_result["checks"], "status": completion["status"]},
     )
 
-    # Step 5: Populate cache and emit completion
+    # Step 6: Populate cache and emit completion
     latency_ms = elapsed_ms()
     truncated = bool(completion.get("truncated"))
     # A truncated answer is half a sentence, a stand-in is the prompt echoed by code, and
@@ -249,6 +293,8 @@ async def process_gateway_request(req: GatewayRequest) -> StructuredPulseRespons
         tokens_used=completion["tokens_used"],
         key_source=key_source,
         truncated=truncated,
+        rag_used=bool(rag_prefix),
+        rag_chunks=rag_chunks,
         signals=[packet.model_dump() for packet in emitted],
     )
 
@@ -331,16 +377,18 @@ async def _streamed_gateway(req: GatewayRequest):
     )
 
     yield await signal(SignalEvent.MODEL_EXECUTION, destination, destination, {"model": target_model})
+    rag_prefix, rag_chunks = await rag_context(req.prompt, destination)
+    local_only = bool(rag_prefix) and not settings.RAG_ALLOW_CLOUD
     messages = [
         {"role": "system", "content": ANSWER_STYLE},
         *(turn.model_dump() for turn in history),
-        {"role": "user", "content": req.prompt},
+        {"role": "user", "content": rag_prefix or req.prompt},
     ]
 
     pieces: List[str] = []
     final: dict = {}
     try:
-        async for piece in provider_manager.stream_completion(target_model, messages, byok=req.byok):
+        async for piece in provider_manager.stream_completion(target_model, messages, byok=req.byok, local_only=local_only):
             if piece["kind"] == "delta":
                 pieces.append(piece["text"])
                 yield _sse("delta", {"text": piece["text"]})
@@ -418,4 +466,6 @@ async def _streamed_gateway(req: GatewayRequest):
         "cost_usd": estimated_cost,
         "key_source": key_source,
         "truncated": truncated,
+        "rag_used": bool(rag_prefix),
+        "rag_chunks": rag_chunks,
     })
