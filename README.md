@@ -308,6 +308,35 @@ python -m uvicorn backend.main:app --reload --port 8000 --host 127.0.0.1
 cd frontend && npm install && npm run dev
 ```
 
+### The whole stack from compose
+
+The same backend also ships as a container, so the full topology — gateway, Qdrant,
+TLS proxy, metrics scraper — comes up as one unit. The operator's native `:8000`
+process is untouched; the containerized copy listens on loopback only:
+
+```bash
+docker compose up -d            # qdrant + gateway(:8010) + caddy(:8443) + prometheus(:9090)
+GW=http://127.0.0.1:8010 ./scripts/demo.sh
+```
+
+Inside the container Ollama is reached at `host.docker.internal:11434`, because the
+model belongs to the host GPU; dockerizing the model itself would give up the GPU for
+no gain. Caddy terminates TLS with a self-signed internal certificate, so:
+
+```bash
+curl -sk https://localhost:8443/health        # through TLS, with security headers
+curl -s  http://127.0.0.1:8010/health         # direct, for comparison
+curl -s  http://127.0.0.1:9090/api/v1/targets # Prometheus shows the gateway target UP
+```
+
+Measured on the compose stack: the first prompt through `:8010` answered `local_slm`
+in 2.6 s with 201 tokens, the repeat hit the Qdrant cache in 87 ms with 0 tokens,
+`/api/gateway/metrics` reported `gateway_requests_total`/`gateway_tokens_used_total`/
+`gateway_cache_hits_total` straight from the ledger, and Prometheus showed the
+`gateway` target `up` on `/api/gateway/metrics`. The Caddy site is `localhost:8443`
+because `tls internal` needs a hostname to issue the certificate for; loopback-only
+publishing is unchanged.
+
 Cloud tiers are opt-in per key: set `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`,
 `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `XAI_API_KEY` or
 `OPENROUTER_API_KEY` in `.env`, or pass `byok` per request. `host_provider_status()`
@@ -337,6 +366,7 @@ needs a token. 77 tests, no network calls.
 | `POST` | `/api/gateway/chat/stream` | the same lifecycle as SSE (`signal` / `delta` / `done` / `error`) |
 | `GET` | `/api/gateway/usage` | ledger aggregates |
 | `GET` | `/api/gateway/models` | local models pulled + per-provider host key status |
+| `GET` | `/api/gateway/metrics` | the ledger as Prometheus gauges (scraped by the compose stack) |
 | `POST` | `/api/gateway/cache/clear` | drop every cached answer |
 | `WS` | `/ws/signals` | live routing events for the canvas |
 | `GET` | `/health` | liveness |
@@ -459,5 +489,10 @@ frontend/
   src/components/pulse/      Canvas 2D pixel world driven by WS signals
   src/lib/pulse/gateway.js   endpoints, SSE parsing, and formatting single source
 tests/                       hermetic suite (see conftest.py)
+scripts/demo.sh              the five-minute proof: miss, hit, cloud route, ledger
 scripts/blender/             sprite/asset generators for the canvas
+Dockerfile                   the backend as a container (compose: gateway)
+docker-compose.yml           qdrant, gateway(:8010), caddy TLS(:8443), prometheus(:9090)
+Caddyfile                    TLS termination + security headers for the compose stack
+prometheus.yml               scrape config pointed at /api/gateway/metrics
 ```

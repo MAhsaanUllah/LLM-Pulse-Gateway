@@ -52,6 +52,29 @@ async def get_usage_summary() -> UsageSummaryResponse:
     return UsageSummaryResponse(**usage_ledger.totals(), by_route=usage_ledger.per_route())
 
 
+@router.get("/gateway/metrics")
+async def get_prometheus_metrics() -> StreamingResponse:
+    """The ledger as Prometheus gauges, so a scraper sees what /api/gateway/usage shows.
+
+    Every number is read from the same SQLite rows the usage endpoint reports; there is
+    no second counting path that could disagree with the ledger.
+    """
+    totals = usage_ledger.totals()
+    gauges = [
+        ("gateway_requests_total", "Requests served since the ledger was created.", totals["requests"]),
+        ("gateway_tokens_used_total", "Provider-reported tokens spent.", totals["tokens_used"]),
+        ("gateway_cache_hits_total", "Answers served from the semantic cache.", totals["cache_hits"]),
+        ("gateway_avg_latency_ms", "Mean wall-clock answer latency.", totals["avg_latency_ms"]),
+        ("gateway_estimated_cost_usd", "Router-side cost estimate summed over all answers.", totals["estimated_cost_usd"]),
+    ]
+    lines = []
+    for name, help_text, value in gauges:
+        lines.append(f"# HELP {name} {help_text}")
+        lines.append(f"# TYPE {name} gauge")
+        lines.append(f"{name} {value}")
+    return StreamingResponse(iter(["\n".join(lines) + "\n"]), media_type="text/plain; version=0.0.4")
+
+
 @router.post("/gateway/cache/clear", response_model=CacheClearResponse)
 async def clear_semantic_cache() -> CacheClearResponse:
     """Drop every stored answer so the next prompt is genuinely re-asked."""
