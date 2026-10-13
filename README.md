@@ -551,6 +551,26 @@ Stated rather than hidden:
   needs a key pasted under API keys & settings. Without one, an answer is honest about
   being routed locally or on the host key.
 
+## Future work
+
+Deferred on purpose, each with the thing that makes it worth building:
+
+- **Tool calls, not only text.** The cascade can answer but never act. Function calling
+  (read the ledger, run a bounded SQL, hit an internal API) is what turns "ask about the
+  handbook" into "do the thing the handbook says", and it needs the response schema to
+  carry a tool result next to `response`. This is the biggest remaining gap.
+- **OCR and document parsers.** The paperclip takes text files because the browser reads
+  those with no dependency. PDF, DOCX and scanned pages need a server-side extractor,
+  plus a decision about where extracted text is allowed to go, so it stays out of the
+  request path until someone actually needs it.
+- **Server-side sessions.** `history` travels with every request today, which is why the
+  semantic cache has to bypass a conversation in progress. A stored session would let the
+  cache serve follow-ups too.
+- **Accounts instead of one shared token.** Per-caller identity and per-key quotas; see
+  the first Known limit for what the single bearer secret does and does not buy.
+- The rest of the honest gaps are already listed above: cloud-tier streaming, the
+  file/Qdrant indexes never merging, and expiry being a read rule.
+
 ## Layout
 
 ```
