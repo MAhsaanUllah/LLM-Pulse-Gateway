@@ -8,7 +8,7 @@ Everything runs on your machine by default. With no API keys and no Ollama, the
 gateway still answers: it labels the reply `status: "simulated"` rather than
 pretending a model replied.
 
-![LLM Pulse Gateway UI](docs/screenshot.png)
+![The gateway UI answering from a locally attached handbook chapter: provenance panel on the left, chat with a grounded-answer chip on the right](docs/screenshot.png)
 
 ---
 

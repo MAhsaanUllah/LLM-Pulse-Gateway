@@ -175,7 +175,7 @@ class InMemoryIndex:
             return 0.0
         return dot / (na * nb)
 
-    # ponytail: rewrites the whole JSON file per stored answer. Cheap up to a few
+    # Note: rewrites the whole JSON file per stored answer. Cheap up to a few
     # thousand entries; beyond that run Qdrant (docker-compose up) instead.
     def upsert(self, key: str, vector: list[float], payload: dict[str, Any]) -> None:
         self._entries[key] = (list(vector), payload)

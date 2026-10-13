@@ -395,9 +395,9 @@ class ProviderManager:
         `{'kind': 'final', ...}` record shaped like execute_completion's.
 
         Only the local daemon streams token by token; every other tier answers as one
-        block, so its caller sees a single delta.
-        ponytail: per-provider cloud streaming needs astream calls — worth adding when
-        a cloud tier becomes the usual route, not while local answers the simple ones.
+        block, so its caller sees a single delta. Per-provider cloud streaming needs
+        astream calls, worth adding when a cloud tier becomes the usual route, not
+        while local answers the simple ones.
         """
         streamed: List[str] = []
         if model.startswith("ollama"):
@@ -452,7 +452,7 @@ class ProviderManager:
         # lines so the caller recognises the request, never the whole thing.
         echoed = user_prompt if len(user_prompt) <= 240 else f"{user_prompt[:240].rstrip()}…"
         simulated_response = (
-            f"⚠️ [LLM Pulse Gateway — SIMULATED: no model answered]\n\n"
+            f"⚠️ [LLM Pulse Gateway, SIMULATED: no model answered]\n\n"
             f"Your prompt: {echoed}\n\n"
             f"Cascade: {cascade}\n\n"
             f"Start Ollama (`ollama serve`), send `byok` with the request, or set a host key in `.env`: "
