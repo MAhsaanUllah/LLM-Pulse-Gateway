@@ -21,6 +21,13 @@ prompts/private/
 prompts/secret/
 *.private.prompt
 
+# Personal AI-assistant instruction files (local only, never published)
+AGENTS.md
+.cursorrules
+CLAUDE.md
+GEMINI.md
+QODER.md
+
 # ----------------------------------------------------------- Python / FastAPI ---
 __pycache__/
 *.py[cod]

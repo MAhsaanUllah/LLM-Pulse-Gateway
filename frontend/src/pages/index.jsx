@@ -26,10 +26,10 @@ const PROVIDER_FIELDS = [
   { key: 'openrouter_api_key', label: 'OpenRouter' },
 ];
 
-const IDLE_STATUS = 'Idle — vector cache ready';
+const IDLE_STATUS = 'Idle: vector cache ready';
 
 const GREETING =
-  "Ask anything — I'll route it through the cache, a local model, or the cloud, live.";
+  "Ask anything. I'll route it through the cache, a local model, or the cloud, live.";
 
 const SUGGESTIONS = [
   'Explain semantic caching',
@@ -190,7 +190,7 @@ function MetricRow({ label, value, accent }) {
 function StatusChip({ status, provider, keySource, truncated }) {
   const map = {
     cached: { text: 'Answered from cache · 0 tokens', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
-    simulated: { text: 'Simulated — no model answered', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
+    simulated: { text: 'Simulated: no model answered', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
     fallback: { text: `Fallback · ${provider || 'tier'}`, cls: 'bg-amber-50 text-amber-700 border-amber-200' },
   };
   const chips = [];
@@ -397,11 +397,11 @@ export default function Home() {
       });
 
       if (data.status === 'cached') {
-        setBanner({ text: 'Answered from the semantic cache — 0 tokens billed', tone: 'success' });
-        setNotice('This answer came from vector memory — no model was called.');
+        setBanner({ text: 'Answered from the semantic cache: 0 tokens billed', tone: 'success' });
+        setNotice('This answer came from vector memory; no model was called.');
       } else if (data.status === 'simulated') {
-        setBanner({ text: 'Simulated — no model answered', tone: 'warn' });
-        setNotice('No tier answered. Start Ollama, or paste your own Gemini/DeepSeek key under “Bring your own key” — the host\'s .env keys work too. The cascade trace is in the response metadata.');
+        setBanner({ text: 'Simulated: no model answered', tone: 'warn' });
+        setNotice('No tier answered. Start Ollama, or paste your own Gemini/DeepSeek key under “Bring your own key”; the host\'s .env keys work too. The cascade trace is in the response metadata.');
       } else if (data.status === 'fallback') {
         setBanner({ text: `Answered by the fallback tier (${data.provider_used})`, tone: 'warn' });
       } else {
@@ -454,7 +454,7 @@ export default function Home() {
   return (
     <>
       <Head>
-        <title>LLM Pulse Gateway — 2D Living Simulation</title>
+        <title>LLM Pulse Gateway - 2D Living Simulation</title>
       </Head>
 
       <div className="min-h-screen bg-[#f8fafd]">
@@ -779,7 +779,7 @@ export default function Home() {
               </div>
 
               <p className="text-xs text-slate-500">
-                Optional. Paste your own key for any provider — leave blank to use the host key.
+                Optional. Paste your own key for any provider; leave blank to use the host key.
               </p>
 
               <div className="max-h-60 overflow-y-auto pr-1 space-y-2.5 no-scrollbar">
@@ -797,7 +797,7 @@ export default function Home() {
                       spellCheck={false}
                       value={byok[p.key]}
                       onChange={(e) => setByok((prev) => ({ ...prev, [p.key]: e.target.value }))}
-                      placeholder="Optional — blank uses the host key"
+                      placeholder="Optional: blank uses the host key"
                       className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-xs font-mono text-slate-800 placeholder-slate-400 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition"
                     />
                   </label>
@@ -860,7 +860,7 @@ export default function Home() {
 
               <p className="text-[11px] leading-relaxed text-slate-500">
                 Cloud requests are billed to whichever key is used. The gateway forwards your key for a
-                single request — it never writes it to disk, logs it, or returns it. Browser storage is
+                single request; it never writes it to disk, logs it, or returns it. Browser storage is
                 readable on this machine, so avoid it on a shared PC.
               </p>
             </div>

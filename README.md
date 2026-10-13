@@ -5,8 +5,10 @@ cache, a local small language model, and a cloud fallback chain that only spends
 key it was explicitly given. A pixel-canvas visualiser shows each hop live.
 
 Everything runs on your machine by default. With no API keys and no Ollama, the
-gateway still answers — it labels the reply `status: "simulated"` rather than
+gateway still answers: it labels the reply `status: "simulated"` rather than
 pretending a model replied.
+
+![LLM Pulse Gateway UI](docs/screenshot.png)
 
 ---
 
@@ -21,7 +23,7 @@ pretending a model replied.
 | Nothing reachable | answer labelled `simulated` | nothing |
 
 The ledger (`GET /api/gateway/usage`) is what makes those claims checkable instead of
-aspirational — see [Measured behaviour](#measured-behaviour).
+aspirational; see [Measured behaviour](#measured-behaviour).
 
 ---
 
@@ -75,12 +77,12 @@ without Docker.
 
 `backend/app/api/gateway.py` runs five steps, broadcasting a `SignalPacket` between each:
 
-1. `CACHE_MISS` / `CACHE_HIT` — semantic lookup
-2. `ROUTING_SIGNAL` — chosen destination, model, estimated cost, reason, and the
+1. `CACHE_MISS` / `CACHE_HIT`: semantic lookup
+2. `ROUTING_SIGNAL`: chosen destination, model, estimated cost, reason, and the
    complexity breakdown (score, word count, heuristic hits) behind that reason
-3. `MODEL_EXECUTION` — cascade attempt
-4. `EVALUATION` — pass/fail on the two observable checks
-5. `COMPLETION` — latency, model, tokens, status, `truncated`
+3. `MODEL_EXECUTION`: cascade attempt
+4. `EVALUATION`: pass/fail on the two observable checks
+5. `COMPLETION`: latency, model, tokens, status, `truncated`
 
 Every step is also returned inline in the response `signals` array, so a client can
 replay a request's path without subscribing to the socket. `POST /api/gateway/chat/stream`
@@ -115,7 +117,7 @@ so a follow-up like "and in one word?" is answerable. The last `MAX_HISTORY_TURN
 turns are forwarded between the system instruction and the new prompt.
 
 While a conversation is in progress the semantic cache is **bypassed in both
-directions** — it stores answers to standalone prompts, and replaying one for a
+directions**: it stores answers to standalone prompts, and replaying one for a
 context-dependent follow-up would be wrong. A turn in progress is therefore never
 written to it either.
 
@@ -134,7 +136,7 @@ event: error    # {"detail": "..."} if the gateway stops mid-answer
 
 The local tier streams from Ollama's native `stream: true`, so the first piece arrives
 while the rest is still being generated. A cached answer is one `delta` plus `done`.
-Cloud tiers are currently delivered as one piece — see [Known limits](#known-limits).
+Cloud tiers are currently delivered as one piece; see [Known limits](#known-limits).
 
 The ledger and the cache see the *finished* answer: one row per request, one entry per
 complete reply, and a stream cut off by the token budget is flagged and never cached.
@@ -166,7 +168,7 @@ complete reply, and a stream cut off by the token budget is flagged and never ca
 inside `metadata` records every tier the cascade tried and why each one did not
 answer (`skipped: no Gemini key (BYOK or .env)`, `HTTP 401`, `TimeoutException`, ...).
 
-**`key_source` says whose credential the tier that answered used** — `"byok"` when the
+**`key_source` says whose credential the tier that answered used**: `"byok"` when the
 caller's request body carried the key, `"operator"` when the host's `.env`/environment
 key did, and `null` when no cloud credential was involved (local Ollama, cache hit,
 stand-in). The UI labels an answer "Your key" or "Host key" from exactly this field.
@@ -193,7 +195,7 @@ curl -X POST http://localhost:8000/api/gateway/chat \
 
 Rules, enforced in `app/core/credentials.py` and `app/core/providers.py`:
 
-- Keys travel in the **request body**, not the `Authorization` header — no CORS
+- Keys travel in the **request body**, not the `Authorization` header: no CORS
   preflight and no key in access logs.
 - **Resolution order:** request `byok` → operator `.env` → process environment.
 - Supported per-request fields: `gemini_api_key`, `deepseek_api_key`,
@@ -206,7 +208,7 @@ Rules, enforced in `app/core/credentials.py` and `app/core/providers.py`:
   `_redact()` first.
 - The UI stores keys in `localStorage` only, behind masked inputs, with a Clear
   button. They stay on that machine and are readable by anyone with that browser
-  profile — that is stated in the panel, not glossed over.
+  profile. That is stated in the panel, not glossed over.
 
 ---
 
@@ -258,7 +260,7 @@ long pasted file plus a long essay will not fit, and the style instruction exist
 keep the answer inside the 256 instead of cutting it off.
 
 When a reply hits the budget, Ollama reports `done_reason: "length"`, the response
-carries **`truncated: true`**, and the answer is **not written to the cache** — a
+carries **`truncated: true`**, and the answer is **not written to the cache**: a
 cut-off reply must never be replayed as if it were complete. A `simulated` stand-in
 is not cached either: it is generated from the prompt by code, not answered by a model.
 
@@ -298,7 +300,7 @@ docker-compose up -d qdrant
 
 # Local model
 ollama serve &                            # or the desktop app
-ollama pull gemma2:2b                     # any chat model
+ollama pull gemma4:e2b                    # any chat model
 ollama pull nomic-embed-text              # embeddings for the semantic cache
 
 # Backend  -> http://localhost:8000  (docs at /docs)
@@ -310,8 +312,8 @@ cd frontend && npm install && npm run dev
 
 ### The whole stack from compose
 
-The same backend also ships as a container, so the full topology — gateway, Qdrant,
-TLS proxy, metrics scraper — comes up as one unit. The operator's native `:8000`
+The same backend also ships as a container, so the full topology (gateway, Qdrant,
+TLS proxy, metrics scraper) comes up as one unit. The operator's native `:8000`
 process is untouched; the containerized copy listens on loopback only:
 
 ```bash
@@ -340,7 +342,7 @@ publishing is unchanged.
 Cloud tiers are opt-in per key: set `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`,
 `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `XAI_API_KEY` or
 `OPENROUTER_API_KEY` in `.env`, or pass `byok` per request. `host_provider_status()`
-exposes which providers the host can already reach — as booleans, never key material
+exposes which providers the host can already reach, as booleans, never key material
 (`GET /api/gateway/models`).
 
 `GATEWAY_TOKEN` and `RATE_LIMIT_PER_MINUTE` are both unset in a fresh `.env`, which
@@ -356,7 +358,7 @@ python -m pytest
 The suite is hermetic by construction (`tests/conftest.py`): every cloud credential
 variable is unset, the LiteLLM tier is forced unavailable, the ledger and the fallback
 cache file are pointed at a temporary directory, and the gates are opened so no test
-needs a token. 77 tests, no network calls.
+needs a token. 79 tests, no network calls.
 
 ## Endpoints
 
@@ -385,11 +387,11 @@ with examples."`), model `gemma4:e2b`, warm process:
 
 The last row is today's behaviour, measured on `"how to understand any new language"`:
 108 words of plain prose that finishes inside the budget, so the cap no longer cuts the
-answer off — the instruction makes the answer small enough to fit.
+answer off; the instruction makes the answer small enough to fit.
 
 The capped request additionally pays routing and embedding overhead inside that
 12.4 s, so the comparison is conservative. A cold first request in a fresh process
-cost 55.9 s and a short one-shot answer cost 14.7 s — model load dominates the first
+cost 55.9 s and a short one-shot answer cost 14.7 s: model load dominates the first
 call, which is why `keep_alive` is raised to 30m.
 
 Streaming, same machine, model already warm (`gemma4:e2b`):
@@ -401,7 +403,7 @@ Streaming, same machine, model already warm (`gemma4:e2b`):
 
 The reader sees the answer while it is still being generated, which is the whole point:
 the block route made them wait the full 6–10 s for one blob. A cold process is the
-opposite story — the first token waited 41.8 s because loading the model into VRAM
+opposite story: the first token waited 41.8 s because loading the model into VRAM
 comes before it, and `keep_alive=30m` is what keeps that out of the way.
 
 Cache lifetime, measured with `CACHE_TTL_SECONDS=4`:
@@ -410,7 +412,7 @@ Cache lifetime, measured with `CACHE_TTL_SECONDS=4`:
 |---|---|
 | first ask | `success`, 218 tokens, 12.5 s |
 | same prompt immediately | `cached`, 0 tokens, 2.2 s |
-| same prompt 5 s later | `success` again — the entry expired and the model was re-asked |
+| same prompt 5 s later | `success` again; the entry expired and the model was re-asked |
 | after `POST /api/gateway/cache/clear` | `success`, 232 tokens |
 
 Restart durability: three prompts in `data/semantic_cache.json`, process killed, started
@@ -430,7 +432,7 @@ no header `401`, wrong scheme `401`, exact bearer `200`, fourth call in the minu
 `429` with `retry-after: 59.0`.
 
 Follow-up with `history`, local tier: "And in one word?" over a previous answer about
-embedding models returned `Representation` in 1.58 s — the earlier turns reached the
+embedding models returned `Representation` in 1.58 s: the earlier turns reached the
 model, and the exchange was not served from, or written to, the cache.
 
 ## Known limits
@@ -441,7 +443,7 @@ Stated rather than hidden:
   "this caller is allowed", not who they are. There are no users, sessions, or per-key
   quotas, and the rate-limit window is per client address in process memory, so it
   resets on restart and every caller looks like one client behind a proxy.
-- **Streaming is the local tier.** Cloud tiers answer as one `delta` — their APIs need
+- **Streaming is the local tier.** Cloud tiers answer as one `delta`; their APIs need
   per-provider `astream` calls, which is worth doing when a cloud route becomes the
   usual one, not while local answers the simple prompts.
 - **Conversation memory is per request.** The server stores no session: the client sends
@@ -450,7 +452,7 @@ Stated rather than hidden:
 - **Expiry is a read rule.** An entry past `CACHE_TTL_SECONDS` is treated as a miss and
   overwritten by the next answer; nothing is deleted from Qdrant on a timer.
 - **The fallback cache file is rewritten whole on every save.** Fine for a few thousand
-  entries, wrong for more — run Qdrant when it matters.
+  entries, wrong for more: run Qdrant when it matters.
 - **The two backends do not merge.** The index is chosen once per process, from whether
   Qdrant answers on `QDRANT_HOST:QDRANT_PORT` at the first cache use. Answers stored in
   the file while Docker was off stay invisible to Qdrant, and vice versa, so a stopped
@@ -458,7 +460,7 @@ Stated rather than hidden:
   backend after starting Qdrant; the running process keeps whichever index it picked.
 - **Local answers are short by design**: 4096 tokens of context total (prompt included)
   and at most 256 generated, which is about 110 words of prose. Paste a large file and
-  ask about it and it will not fit — that route needs a cloud key. A multi-turn
+  ask about it and it will not fit; that route needs a cloud key. A multi-turn
   conversation pays for its own history inside that same window.
 - **Cost is an estimate** (router-side), tokens are real (provider-reported).
   `estimated_cost_usd` for local and simulated routes is `0.0` because nothing was

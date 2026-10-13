@@ -298,7 +298,7 @@ export function createPulseEngine(canvas, { onStatus, onFps } = {}) {
     switch (sim.phase) {
       case 'DISPATCH_TO_VAULT': return 'New request received';
       case 'AT_VAULT': return 'Probing cache…';
-      case 'AT_VAULT_MISS': return 'Cache miss — routing…';
+      case 'AT_VAULT_MISS': return 'Cache miss: routing…';
       case 'TO_FORTRESS_LOCAL': return 'To Local SLM…';
       case 'TO_FORTRESS_CLOUD': return 'To Cloud Fortress…';
       case 'COMPUTING_LOCAL': return 'Model is working…';
@@ -752,7 +752,7 @@ export function createPulseEngine(canvas, { onStatus, onFps } = {}) {
     courier2.bubble = '';
     courier2.bubbleTimer = 0;
 
-    status('Request dispatched — Warden Tower orchestrating…');
+    status('Request dispatched: Warden Tower orchestrating…');
   }
 
   function handleSignal(packet) {
@@ -772,7 +772,7 @@ export function createPulseEngine(canvas, { onStatus, onFps } = {}) {
             '#059669', 90
           );
           spawnBurst(420, 230, '#10b981', 30, 3.5);
-          status('Semantic cache match — vector memory hit.');
+          status('Semantic cache match: vector memory hit.');
         }
         break;
       }
@@ -782,14 +782,14 @@ export function createPulseEngine(canvas, { onStatus, onFps } = {}) {
           sim.timer = 45;
           setCourierBubble('Cache miss', '#d97706', 75);
           spawnBurst(420, 230, '#f59e0b', 18, 2.2);
-          status('Cache miss — SmartRouter evaluating complexity heuristics…');
+          status('Cache miss: SmartRouter evaluating complexity heuristics…');
         }
         break;
       }
       case 'ROUTING_SIGNAL': {
         sim.routeDestination = packet.destination;
         if (sim.flowActive) {
-          const reason = meta.reason ? ` — ${meta.reason}` : '';
+          const reason = meta.reason ? `: ${meta.reason}` : '';
           status(`Routing decision${reason}`);
           if (sim.phase === 'AT_VAULT_MISS') {
             // Miss timer may still be counting; aim the courier now so it moves immediately.
@@ -817,7 +817,7 @@ export function createPulseEngine(canvas, { onStatus, onFps } = {}) {
         if (sim.flowActive) {
           const isCloud = sim.routeDestination === 'cloud_fortress';
           startReturn(isCloud ? 'RESPONSE_CLOUD' : 'RESPONSE_SLM');
-          status('Response synthesized — returning to client.');
+          status('Response synthesized: returning to client.');
         }
         break;
       }
@@ -855,7 +855,7 @@ export function createPulseEngine(canvas, { onStatus, onFps } = {}) {
     setCourierBubble(
       carrying === 'RESPONSE_CACHE' ? 'Cached response ready!' :
       carrying === 'RESPONSE_CLOUD' ? 'Cloud response ready!' :
-      carrying ? 'Response ready!' : 'Request failed — returning',
+      carrying ? 'Response ready!' : 'Request failed: returning',
       carrying ? '#059669' : '#dc2626', 80
     );
     if (carrying) {
@@ -900,7 +900,7 @@ export function createPulseEngine(canvas, { onStatus, onFps } = {}) {
     courier2.carrying = null;
     courier2.bubble = '';
     courier2.bubbleTimer = 0;
-    status('Gateway idle — vector cache ready.');
+    status('Gateway idle: vector cache ready.');
   }
 
   /* ------------------------------ update ------------------------------ */
@@ -998,7 +998,7 @@ export function createPulseEngine(canvas, { onStatus, onFps } = {}) {
           courier.carrying = null;
           setCourierBubble('Delivered to client', '#10b981', 120);
           spawnBurst(TOWER_X + 20, 280, '#2563eb', 20, 2.5);
-          status('Cycle complete — gateway idle.');
+          status('Cycle complete: gateway idle.');
         }
         break;
       }
@@ -1067,7 +1067,7 @@ export function createPulseEngine(canvas, { onStatus, onFps } = {}) {
   resizeCanvas();
   window.addEventListener('resize', onResize);
   rafId = requestAnimationFrame(render);
-  status('Gateway idle — vector cache ready.');
+  status('Gateway idle: vector cache ready.');
 
   return {
     beginFlow,
