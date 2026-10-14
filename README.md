@@ -1,5 +1,14 @@
 # LLM Pulse Gateway
 
+[![Python 3.11](https://img.shields.io/badge/python-3.11-3776AB?style=flat-square)](#setup)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat-square)
+![Next.js 14](https://img.shields.io/badge/Next.js-14-000000?style=flat-square)
+![Ollama](https://img.shields.io/badge/Ollama-local%20model-F9AA16?style=flat-square)
+![Qdrant](https://img.shields.io/badge/Qdrant-vector%20index-2CC0AA?style=flat-square)
+[![Docker Compose](https://img.shields.io/badge/Docker%20Compose-4%20services-2496ED?style=flat-square)](#the-whole-stack-from-compose)
+[![95 tests, no network](https://img.shields.io/badge/tests-95%20passing%20offline-brightgreen?style=flat-square)](#tests)
+![Cloud optional](https://img.shields.io/badge/cloud-optional-yellow?style=flat-square)
+
 A local-first LLM routing gateway: one endpoint in, one answer out, with a semantic
 cache, a local small language model, and a cloud fallback chain that only spends the
 key it was explicitly given. A pixel-canvas visualiser shows each hop live.
@@ -9,6 +18,34 @@ gateway still answers: it labels the reply `status: "simulated"` rather than
 pretending a model replied.
 
 ![The gateway UI answering from a locally attached handbook chapter: provenance panel on the left, chat with a grounded-answer chip on the right](docs/screenshot.png)
+
+---
+
+## What it does, in plain words
+
+Imagine the front desk of a hotel. Every request is logged, the desk remembers questions it has
+already answered, cheap work is done in house, only the concierge with a signed card spends
+money, and when nobody can help, the desk says so instead of inventing an answer.
+
+That desk, for AI models. Six things a visitor can see it do:
+
+1. **Ask the same question twice, pay once.** The second answer comes out of memory instead of
+   a paid model. Proof: the ledger's `Served from cache` counter, in [Usage ledger](#usage-ledger).
+2. **Ordinary questions never leave the computer.** They go to a model running on the same
+   machine, so the cost is electricity. Proof: `destination: "local_slm"` and `cost_usd: 0.0` in
+   [Response provenance](#response-provenance).
+3. **Hand it a document and ask about it.** It finds the relevant page and answers from it, and
+   by default that page is only ever shown to the local model. Proof: `rag_used: true` in
+   [Local knowledge base (RAG)](#local-knowledge-base-rag).
+4. **It cannot spend the wrong person's money.** A visitor can bring their own account key, and
+   every answer records whose key paid. Proof: [Bring your own key (BYOK)](#bring-your-own-key-byok).
+5. **It admits failure.** When no model answered, the reply is labelled `simulated` rather than
+   made up. Proof: the same provenance block.
+6. **You can watch the decision happen.** The screenshot above is a live diagram: every request
+   walks visibly through the guard, the memory, and the model that answered.
+
+The sections below are for the engineer on the other side of the interview: exact endpoints,
+settings, measured numbers, and the limits this project does not pretend to have solved.
 
 ---
 
@@ -570,6 +607,35 @@ Deferred on purpose, each with the thing that makes it worth building:
   the first Known limit for what the single bearer secret does and does not buy.
 - The rest of the honest gaps are already listed above: cloud-tier streaming, the
   file/Qdrant indexes never merging, and expiry being a read rule.
+
+## The vocabulary, and where each word actually lives
+
+Job descriptions for AI platform and LLM platform roles repeat a predictable set of terms. Here
+is that vocabulary with the file or section that implements it, so nothing in this list is a
+claim that cannot be opened and checked.
+
+| Job description term | Where it is in this repo |
+|---|---|
+| LLM gateway, AI gateway | the service itself: one `/api/gateway/chat` in front of several model backends, `backend/app/api/gateway.py` |
+| Model routing, fallback chain, failover | tier heuristics and the cascade that walks them, `backend/app/core/router.py`, `backend/app/core/providers.py` |
+| Cost attribution, token accounting | SQLite ledger of provider-reported tokens and cost per request, keyed by whose key paid, `backend/app/core/usage.py` |
+| BYOK, credential isolation, secret handling | per-request caller keys that stay out of responses, logs, metrics and storage, `backend/app/core/credentials.py` |
+| Semantic caching, vector database, embeddings | cosine cache on Qdrant with a file-backed fallback, `backend/app/core/cache.py` |
+| RAG, chunking, retrieval, grounding | chunk, embed, retrieve, cite, `backend/app/core/knowledge.py` and [Local knowledge base (RAG)](#local-knowledge-base-rag) |
+| Guardrails, data policy, redaction | the two-level privacy gate plus prompt redaction, `backend/app/api/gateway.py`, `backend/app/core/providers.py` |
+| Observability, metrics, provenance | Prometheus exposition at `/api/gateway/metrics`, live WebSocket signal feed, per-request provenance fields, `prometheus.yml`, `backend/app/api/websocket.py` |
+| Evaluation, quality gating | pass/fail screen on the failures this gateway can observe, `backend/app/features/evals.py`. It reports no faithfulness score, because there is no ground truth to score against |
+| Streaming, SSE, time to first token | token-by-token from the local tier, `/api/gateway/chat/stream` |
+| API design, typed contracts | FastAPI with strict Pydantic v2 models, OpenAPI at `/docs`, `backend/app/features/parser.py` |
+| Authentication, rate limiting | bearer token plus a sliding window per client, `backend/app/core/guard.py` |
+| TLS termination, reverse proxy | `Caddyfile` in the compose stack |
+| Containerisation, reproducible config | `Dockerfile`, `docker-compose.yml`, `.env.example` |
+| Testing, TDD, CI-ready suite | 95 hermetic tests that need no network, `tests/`, [Tests](#tests) |
+| Developer experience | one scripted demo end to end (`scripts/demo.sh`), live UI, [Setup](#setup) |
+
+Deliberately not claimed, because they are not in this repo: LLM-as-judge eval suites, prompt
+registries and versioning, Kubernetes, Helm or Terraform, GPU serving stacks such as vLLM,
+fine-tuning, multi-tenant accounts, and distributed tracing across services.
 
 ## Layout
 
