@@ -490,8 +490,6 @@ built on (an RTX 4050 laptop, 6 GB VRAM).
 | `gemma2:2b` | Ollama, local | 1.63 GB | the local model in the screenshot and in most measurements: answered a grounded handbook question with 303 tokens in 18.79 s at `cost_usd: 0.0` |
 | `nomic-embed-text` | Ollama, local | 0.27 GB | the semantic model. One embedder serves both the cache and the knowledge base, 768 dimensions per vector, so a document and a prompt are comparable in the same space |
 | `deepseek-chat` | LiteLLM, cloud | provider hosted | the premium tier that actually answered a paid request: 213 tokens, \$0.006, 32.3 s, `key_source: operator` |
-| `gemini-3.8-flash`, `gpt-4o-mini`, `claude-3-5-sonnet-20241022`, `llama-3.3-70b-versatile`, `grok-2-latest`, `openai/gpt-4o-mini` | LiteLLM, cloud | provider hosted | the rest of the cascade, one default per provider in `backend/config.py`. A tier with no key is skipped outright and the reason lands in `attempted`, so the list is a capability, not a bill |
-| `qwen3.5:4b`, `minimax-m2.5:cloud` | Ollama, on disk | 3.39 GB, stub | present but not wired in. `qwen3.5:4b` loads at 7.5 GB and 100 percent CPU on this machine and took 110 s or more for a one line prompt, so nothing routes to it |
 
 **What the local side was doing, in numbers.** In the session behind the screenshot the ledger held
 103 requests: 76 answered by the local model (10,888 tokens), 24 served straight from the vector
