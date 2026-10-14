@@ -141,8 +141,10 @@ runs the same lifecycle and delivers it as Server-Sent Events instead of one blo
 
 ## Gates: access token and rate limit
 
-Both are open by default, because a local demo should not need a token to start. Set
-them in `.env` before the port means anything.
+The token is empty out of the box, because a local demo should not need one to start, while the
+limiter ships at 60 requests a minute per client: high enough to never be noticed locally, low
+enough that a runaway script cannot hammer the cascade. Set both in `.env` before the port means
+anything.
 
 | Setting | Effect |
 |---|---|
@@ -162,8 +164,9 @@ port spends the keys in your `.env`.
 ## Conversation memory
 
 `GatewayRequest.history` carries prior turns (`{role: "user" \| "assistant", content}`),
-so a follow-up like "and in one word?" is answerable. The last `MAX_HISTORY_TURNS` (12)
-turns are forwarded between the system instruction and the new prompt.
+so a follow-up like "and in one word?" is answerable. The last `MAX_HISTORY_TURNS` (12, a constant
+in `backend/app/features/parser.py` rather than a `.env` knob) turns are forwarded between the
+system instruction and the new prompt.
 
 While a conversation is in progress the semantic cache is **bypassed in both
 directions**: it stores answers to standalone prompts, and replaying one for a
@@ -297,7 +300,7 @@ No prompt text and no key material is ever written. Delete the file to reset.
 Ollama allocates a KV cache sized by `num_ctx` and generates until the model stops,
 which is how a "quick" local answer turns into a 1500-token markdown essay. The gateway
 asks for the shape it wants with one system instruction (`ANSWER_STYLE` in
-`backend/app/api/gateway.py`): plain prose, no markdown or em dashes, roughly 120 words.
+`backend/app/api/gateway.py`): plain prose, no markdown or em dashes, at most 120 words.
 Budgets:
 
 | Setting | Value | Why |
@@ -305,7 +308,7 @@ Budgets:
 | `OLLAMA_NUM_CTX` | 4096 | prompt + answer window; Ollama otherwise reserves the model's full 131k |
 | `OLLAMA_NUM_PREDICT` | 256 | bounds generated tokens per answer (~110 words of prose) |
 | `think` | `false` (payload) | reasoning models otherwise burn the whole budget on hidden chain-of-thought |
-| `OLLAMA_KEEP_ALIVE` | `30m` | a cold reload costs 12–50 s |
+| `OLLAMA_KEEP_ALIVE` | `30m` | a cold reload costs 12 to 50 s |
 | `INFERENCE_TIMEOUT_SECONDS` | 90 | must exceed cold-load + first token |
 
 So a local answer is bounded by 4096 tokens of context with at most 256 generated: a
@@ -393,12 +396,12 @@ gateway with no documents behaves exactly the way it did before this feature exi
 Requirements: Python 3.11+, Node 18+, and optionally Docker and Ollama.
 
 ```bash
-pip install -r requirements.txt
+pip install -r backend/requirements.txt
 cp .env.example .env                      # fill in nothing to stay local
 
 # Optional infrastructure (vector persistence; cache works without it).
 # Needs the Docker engine running, not just the CLI installed.
-docker-compose up -d qdrant
+docker compose up -d qdrant
 
 # Local model
 ollama serve &                            # or the desktop app
@@ -408,7 +411,7 @@ ollama pull nomic-embed-text              # embeddings for the semantic cache
 # Backend  -> http://localhost:8000  (docs at /docs)
 python -m uvicorn backend.main:app --reload --port 8000 --host 127.0.0.1
 
-# Frontend -> port from frontend/package.json
+# Frontend -> http://localhost:3001  (port pinned in frontend/package.json)
 cd frontend && npm install && npm run dev
 ```
 
@@ -447,9 +450,9 @@ Cloud tiers are opt-in per key: set `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`,
 exposes which providers the host can already reach, as booleans, never key material
 (`GET /api/gateway/models`).
 
-`GATEWAY_TOKEN` and `RATE_LIMIT_PER_MINUTE` are both unset in a fresh `.env`, which
-leaves the gateway open on `127.0.0.1`; see [Gates](#gates-access-token-and-rate-limit)
-before exposing it further.
+A fresh `.env` ships `GATEWAY_TOKEN` empty, so nothing demands a bearer token, with
+`RATE_LIMIT_PER_MINUTE=60` still throttling each client on `127.0.0.1`; see
+[Gates](#gates-access-token-and-rate-limit) before exposing it further.
 
 ## Tests
 
@@ -461,7 +464,7 @@ The suite is hermetic by construction (`tests/conftest.py`): every cloud credent
 variable is unset, the LiteLLM tier is forced unavailable, the ledger and the fallback
 cache and knowledge files are pointed at a temporary directory, the cache and knowledge
 services are replaced with in-process indexes so no test touches a live Ollama or Qdrant,
-and the gates are opened so no test needs a token. 94 tests, no network calls.
+and the gates are opened so no test needs a token. 95 tests, no network calls.
 
 ## Endpoints
 
@@ -489,7 +492,7 @@ built on (an RTX 4050 laptop, 6 GB VRAM).
 | `gemma4:e2b` | Ollama, local | 7.16 GB | the configured default answerer (`OLLAMA_MODEL` in `backend/config.py`). It answered on this machine while it stayed resident, and those are the `gemma4:e2b` rows in [Measured behaviour](#measured-behaviour). It is a 7 GB model on a 6 GB card, so the more recent runs here name the next row instead |
 | `gemma2:2b` | Ollama, local | 1.63 GB | the local model in the screenshot and in most measurements: answered a grounded handbook question with 303 tokens in 18.79 s at `cost_usd: 0.0` |
 | `nomic-embed-text` | Ollama, local | 0.27 GB | the semantic model. One embedder serves both the cache and the knowledge base, 768 dimensions per vector, so a document and a prompt are comparable in the same space |
-| `deepseek-chat` | LiteLLM, cloud | provider hosted | the premium tier that actually answered a paid request: 213 tokens, \$0.006, 32.3 s, `key_source: operator` |
+| `deepseek-chat` | Direct HTTP, cloud | provider hosted | the premium tier that actually answered a paid request: 213 tokens, \$0.006, 32.3 s, `key_source: operator`. Called straight at its OpenAI-compatible endpoint, so it needs no LiteLLM and is unaffected by `OPENAI_API_KEY` |
 
 **What the local side was doing, in numbers.** In the session behind the screenshot the ledger held
 103 requests: 76 answered by the local model (10,888 tokens), 24 served straight from the vector
@@ -534,7 +537,7 @@ Streaming, same machine, model already warm (`gemma4:e2b`):
 | "What is prompt injection?" | 132 | 7.4 s | 9.5 s | 200 |
 
 The reader sees the answer while it is still being generated, which is the whole point:
-the block route made them wait the full 6–10 s for one blob. A cold process is the
+the block route made them wait the full 6 to 10 s for one blob. A cold process is the
 opposite story: the first token waited 41.8 s because loading the model into VRAM
 comes before it, and `keep_alive=30m` is what keeps that out of the way.
 
