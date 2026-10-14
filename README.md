@@ -8,6 +8,7 @@
 [![Docker Compose](https://img.shields.io/badge/Docker%20Compose-4%20services-2496ED?style=flat-square)](#the-whole-stack-from-compose)
 [![95 tests, no network](https://img.shields.io/badge/tests-95%20passing%20offline-brightgreen?style=flat-square)](#tests)
 ![Cloud optional](https://img.shields.io/badge/cloud-optional-yellow?style=flat-square)
+[![License MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](#license)
 
 A local-first LLM routing gateway: one endpoint in, one answer out, with a semantic
 cache, a local small language model, and a cloud fallback chain that only spends the
@@ -477,6 +478,35 @@ and the gates are opened so no test needs a token. 94 tests, no network calls.
 | `WS` | `/ws/signals` | live routing events for the canvas |
 | `GET` | `/health` | liveness |
 
+## The models behind it
+
+Nothing here is a mock: these are the actual model names this gateway was run against, with the
+role each one played. Sizes are what the local Ollama daemon reported on the machine this was
+built on (an RTX 4050 laptop, 6 GB VRAM).
+
+| Model | Where it runs | Size | Job in this gateway |
+|---|---|---|---|
+| `gemma4:e2b` | Ollama, local | 7.16 GB | the configured default answerer (`OLLAMA_MODEL` in `backend/config.py`). It answered on this machine while it stayed resident, and those are the `gemma4:e2b` rows in [Measured behaviour](#measured-behaviour). It is a 7 GB model on a 6 GB card, so the more recent runs here name the next row instead |
+| `gemma2:2b` | Ollama, local | 1.63 GB | the local model in the screenshot and in most measurements: answered a grounded handbook question with 303 tokens in 18.79 s at `cost_usd: 0.0` |
+| `nomic-embed-text` | Ollama, local | 0.27 GB | the semantic model. One embedder serves both the cache and the knowledge base, 768 dimensions per vector, so a document and a prompt are comparable in the same space |
+| `deepseek-chat` | LiteLLM, cloud | provider hosted | the premium tier that actually answered a paid request: 213 tokens, \$0.006, 32.3 s, `key_source: operator` |
+| `gemini-3.8-flash`, `gpt-4o-mini`, `claude-3-5-sonnet-20241022`, `llama-3.3-70b-versatile`, `grok-2-latest`, `openai/gpt-4o-mini` | LiteLLM, cloud | provider hosted | the rest of the cascade, one default per provider in `backend/config.py`. A tier with no key is skipped outright and the reason lands in `attempted`, so the list is a capability, not a bill |
+| `qwen3.5:4b`, `minimax-m2.5:cloud` | Ollama, on disk | 3.39 GB, stub | present but not wired in. `qwen3.5:4b` loads at 7.5 GB and 100 percent CPU on this machine and took 110 s or more for a one line prompt, so nothing routes to it |
+
+**What the local side was doing, in numbers.** In the session behind the screenshot the ledger held
+103 requests: 76 answered by the local model (10,888 tokens), 24 served straight from the vector
+cache (0 tokens), and 3 rows on the cloud tier carrying 0 billed tokens, for \$0.0000 estimated
+cost across the whole session. The paid cloud answer in the table above is a separate measured
+run, on the containerized gateway.
+
+**Swapping in a newer model is a config line, not a code change.** `OLLAMA_MODEL`,
+`EMBEDDING_MODEL` and one `DEFAULT_<PROVIDER>_MODEL` per provider are read from `.env`, so a
+fresher release is picked up without touching the cascade, the cache or the UI.
+
+**What it is wired to:** FastAPI 0.115 with Pydantic 2.13 typed contracts, `uvicorn` 0.34,
+LiteLLM 1.98 as the cloud cascade, `qdrant-client` 1.19 for both vector indexes, Next.js 14 with
+React 18 and Tailwind 3.4 on the front, Caddy for TLS termination, and Prometheus for scraping.
+
 ## Measured behaviour
 
 Same prompt (`"Explain semantic caching, vector databases, and LLM routing in detail
@@ -667,3 +697,9 @@ docker-compose.yml           qdrant, gateway(:8010), caddy TLS(:8443), prometheu
 Caddyfile                    TLS termination + security headers for the compose stack
 prometheus.yml               scrape config pointed at /api/gateway/metrics
 ```
+
+---
+
+## License
+
+MIT. See [LICENSE](LICENSE).
